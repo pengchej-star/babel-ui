@@ -1,0 +1,1264 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Babel</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/yaml/yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/toml/toml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6eb; --text: #1b1f24; --muted: #6a737d;
+  --accent: #2f6fde; --ok: #1f9d55; --warn: #c98a00; --bad: #d1453b;
+  --pip-free: #34c27a; --pip-used: #c9ced6; --pip-off: #eceef1; --pip-mine: #2f6fde;
+  --hover: #f0f3f7; --term-bg: #15181d;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1115; --panel: #171a20; --line: #262b33; --text: #e4e7eb; --muted: #8b949e;
+    --accent: #5b93f5; --ok: #3fb96f; --warn: #e0a526; --bad: #ef6157;
+    --pip-free: #3fb96f; --pip-used: #3a414c; --pip-off: #20242b; --pip-mine: #5b93f5;
+    --hover: #1e222a; --term-bg: #0c0e12;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-size: 13px; }
+button { font: inherit; color: inherit; background: var(--hover); border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.ghost { background: none; border-color: transparent; }
+button.ghost:hover { border-color: var(--line); }
+input, select { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 8px; }
+.mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 12px; }
+.muted { color: var(--muted); }
+
+header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line);
+  background: var(--panel); }
+header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); display: inline-block; }
+.dot.on { background: var(--ok); }
+#connHint { color: var(--warn); }
+header .spacer { flex: 1; }
+
+nav.tabs { display: flex; gap: 2px; margin-left: 12px; }
+nav.tabs button { background: none; border: none; border-radius: 6px; padding: 5px 12px; color: var(--muted); }
+nav.tabs button:hover { background: var(--hover); color: var(--text); }
+nav.tabs button.active { background: var(--hover); color: var(--text); font-weight: 600; }
+nav.tabs .count { font-size: 11px; color: var(--muted); margin-left: 4px; font-weight: 400; }
+main { padding: 10px; height: calc(100vh - 45px); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; display: none;
+  flex-direction: column; height: 100%; overflow: hidden; }
+.card.active { display: flex; }
+.card > .head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.card > .head h2 { font-size: 13px; margin: 0; font-weight: 600; }
+.card > .head .spacer { flex: 1; }
+.card > .body { flex: 1; overflow: auto; min-height: 0; }
+@media (max-width: 640px) {
+  header { flex-wrap: wrap; }
+  nav.tabs { order: 10; width: 100%; margin-left: 0; }
+  main { height: calc(100vh - 80px); }
+}
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-weight: 500; color: var(--muted); position: sticky; top: 0; background: var(--panel); z-index: 1; }
+tr:hover td { background: var(--hover); }
+.badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: 600;
+  background: var(--hover); color: var(--muted); }
+.badge.RUNNING { color: var(--ok); } .badge.PENDING { color: var(--warn); }
+.badge.FAILED, .badge.CANCELLED, .badge.TIMEOUT { color: var(--bad); }
+.empty { padding: 24px; text-align: center; color: var(--muted); }
+.qline { padding: 6px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.chip { border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px; cursor: pointer; background: var(--bg); }
+.chip b { font-variant-numeric: tabular-nums; }
+.chip.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.node { display: grid; grid-template-columns: 110px auto minmax(0, 1fr); gap: 10px; align-items: center;
+  padding: 5px 12px; border-bottom: 1px solid var(--line); }
+.node:hover { background: var(--hover); }
+.node .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.node .meta { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pips { display: flex; gap: 3px; flex-wrap: wrap; }
+.pip { width: 13px; height: 13px; border-radius: 3px; background: var(--pip-free); }
+.pip.used { background: var(--pip-used); }
+.pip.off { background: var(--pip-off); outline: 1px dashed var(--line); }
+.pip.planned { background: none; box-shadow: inset 0 0 0 2px var(--pip-free); }
+.pip.stranded { background: repeating-linear-gradient(45deg, var(--pip-used) 0 2px, transparent 2px 4px);
+  box-shadow: inset 0 0 0 1px var(--pip-used); }
+.qline details summary { cursor: pointer; display: inline; }
+.qline details[open] summary { margin-bottom: 4px; }
+.node.mine .name { color: var(--pip-mine); }
+.card > .head { flex-wrap: wrap; row-gap: 6px; }
+.card > .head label { white-space: nowrap; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; color: var(--muted); font-size: 11px; }
+.legend > span { white-space: nowrap; }
+.legend .pip { display: inline-block; vertical-align: -2px; margin-right: 4px; }
+
+.pathbar { display: flex; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.pathbar input { flex: 1; min-width: 0; }
+.frow { display: grid; grid-template-columns: 22px 1fr 80px 90px; gap: 8px; padding: 4px 12px;
+  align-items: center; cursor: pointer; border-bottom: 1px solid transparent; }
+.frow:hover { background: var(--hover); }
+.frow .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frow .s, .frow .t { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.frow .bar { grid-column: 2 / -1; height: 4px; border-radius: 2px; background: var(--accent); opacity: .6; margin-top: -2px; }
+.disk { padding: 6px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; white-space: pre; overflow-x: auto; }
+
+#termBox { flex: 1; background: var(--term-bg); padding: 6px; min-height: 0; }
+#termBox .xterm { height: 100%; }
+
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
+  width: min(900px, 92vw); padding: 0; }
+dialog::backdrop { background: rgba(0,0,0,.4); }
+dialog .head { display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); gap: 8px; }
+dialog pre { margin: 0; padding: 12px; max-height: 70vh; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+.err { color: var(--bad); padding: 10px 12px; }
+.pwbody { padding: 4px 16px 16px; }
+.pwbody p { margin: 10px 0; }
+#pwForm { display: flex; gap: 8px; }
+#pwForm input { flex: 1; min-width: 0; }
+
+tr.click { cursor: pointer; }
+.small { font-size: 11px; }
+.toast { position: fixed; right: 16px; bottom: 16px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.15); z-index: 50; max-width: 420px; }
+
+/* job detail */
+#jobDlg { width: min(1100px, 95vw); }
+#jobDlg .kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 16px;
+  padding: 10px 12px; border-bottom: 1px solid var(--line); }
+#jobDlg .kv div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#jobDlg .kv b { font-weight: 500; color: var(--muted); margin-right: 6px; }
+.gpurow { display: grid; grid-template-columns: 56px 1fr 1fr; gap: 10px; align-items: center; padding: 3px 12px; }
+.meter { height: 8px; border-radius: 4px; background: var(--pip-used); overflow: hidden; }
+.meter > i { display: block; height: 100%; background: var(--accent); }
+.logbar { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; padding: 6px 12px; border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line); }
+.logbar label { white-space: nowrap; }
+#jLogPath { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 200px; }
+.badge.COMPLETED { color: var(--ok); }
+.badge.OUT_OF_MEMORY, .badge.NODE_FAIL, .badge.PREEMPTED { color: var(--bad); }
+#logText { height: 50vh; max-height: none; background: var(--term-bg); color: #d6dbe1; font-size: 12px; }
+
+/* request form */
+.form { padding: 16px; display: grid; gap: 14px; max-width: 720px; }
+.form .row { display: grid; grid-template-columns: 90px 1fr; gap: 10px; align-items: center; }
+.form .row > div { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.form input[type=number] { width: 80px; }
+.result { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); white-space: pre-wrap; }
+.result.good { border-color: var(--ok); }
+.cmd { padding: 8px 12px; border-radius: 6px; background: var(--term-bg); color: #d6dbe1; overflow-x: auto; white-space: pre; }
+
+/* files */
+.frow { grid-template-columns: 16px 22px 1fr 80px 90px 26px; }
+.frow .bar { grid-column: 3 / -1; }
+.frow.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.frow.cut { opacity: .5; }
+.fsbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 12px;
+  border-bottom: 1px solid var(--line); background: var(--bg); font-size: 12px; }
+.fsbar:empty { display: none; }
+.fsbar .grp { display: flex; gap: 4px; align-items: center; }
+.fsbar .grp + .grp { margin-left: 8px; padding-left: 10px; border-left: 1px solid var(--line); }
+button.danger { color: var(--bad); }
+
+/* editor */
+#editDlg { width: 96vw; max-width: 1400px; height: 88vh; max-height: none; }
+#editDlg[open] { display: flex; flex-direction: column; }
+#editDlg .head .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#editDlg .dirty { color: var(--warn); font-size: 18px; line-height: 1; }
+#editDlg .head button, #editStatus { white-space: nowrap; flex-shrink: 0; }
+#editBox { flex: 1; min-height: 0; }
+#editBox .CodeMirror { height: 100%; font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 13px; }
+#editMsg { padding: 24px; color: var(--muted); }
+.frow .dl { visibility: hidden; padding: 0 4px; }
+.frow:hover .dl { visibility: visible; }
+#files.drag { outline: 2px dashed var(--accent); outline-offset: -6px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>Babel</h1>
+  <span class="muted mono" id="host"></span>
+  <nav class="tabs" id="tabs">
+    <button data-tab="jobs">作业<span class="count" id="jobsTabCount"></span></button>
+    <button data-tab="hist">历史</button>
+    <button data-tab="req">申请</button>
+    <button data-tab="gpus">GPU<span class="count" id="gpuTabCount"></span></button>
+    <button data-tab="files">文件</button>
+    <button data-tab="term">终端</button>
+  </nav>
+  <span id="connHint"></span>
+  <span class="spacer"></span>
+  <span class="muted" id="updated"></span>
+  <button id="pwBtn" title="登录设置：保存密码，自动登录">🔑</button>
+  <button id="refreshAll" title="刷新">刷新</button>
+</header>
+
+<main>
+  <section class="card" id="jobs">
+    <div class="head"><h2>我的作业</h2><span class="muted" id="jobCount"></span><span class="spacer"></span>
+      <span class="muted small">点一行看日志 / GPU 利用率</span>
+      <label class="muted" title="作业开始运行、结束时弹 macOS 通知（页面关着也会通知，只要服务在跑）"><input type="checkbox" id="notifyOn"> 系统通知</label>
+      <button class="ghost small" id="notifyTest">测试</button>
+    </div>
+    <div class="body" id="jobsBody"><div class="empty">等待连接…</div></div>
+    <div class="qline" id="qline"></div>
+  </section>
+
+  <section class="card" id="hist">
+    <div class="head"><h2>历史作业</h2>
+      <select id="histDays"><option value="1">最近 1 天</option><option value="7" selected>最近 7 天</option><option value="30">最近 30 天</option></select>
+      <span class="spacer"></span>
+      <span class="muted small">「重新提交」会把原命令放进终端，确认后按回车</span>
+    </div>
+    <div class="body" id="histBody"><div class="empty">等待连接…</div></div>
+  </section>
+
+  <section class="card" id="req">
+    <div class="head"><h2>申请资源</h2><span class="spacer"></span><span class="muted small" id="reqAcct"></span></div>
+    <div class="body">
+      <div class="form">
+        <div class="row"><label>分区</label><div><select id="rPart"></select><span class="muted small" id="rPartInfo"></span></div></div>
+        <div class="row"><label>GPU</label><div>
+          <select id="rType"></select> ×
+          <input type="number" id="rGpus" min="0" max="16" value="1">
+          <span class="small" id="rAvail"></span></div></div>
+        <div class="row"><label>CPU</label><div><input type="number" id="rCpus" min="1" max="256" value="8"> 核</div></div>
+        <div class="row"><label>内存</label><div><input type="number" id="rMem" min="1" max="2000" value="64"> GB</div></div>
+        <div class="row"><label>时长</label><div>
+          <input id="rTime" class="mono" value="4:00:00" style="width:110px">
+          <button class="ghost" data-t="0:30:00">30 分</button><button class="ghost" data-t="1:00:00">1 时</button>
+          <button class="ghost" data-t="4:00:00">4 时</button><button class="ghost" data-t="12:00:00">12 时</button>
+          <button class="ghost" data-t="1-00:00:00">1 天</button><button class="ghost" data-t="2-00:00:00">2 天</button></div></div>
+        <div class="row"><span></span><div>
+          <button id="rEstimate">预估开始时间</button>
+          <button id="rSalloc">开交互式会话</button>
+          <button class="ghost" id="rCopy">复制 #SBATCH 头</button></div></div>
+        <div class="result" id="rResult" hidden></div>
+        <div class="cmd mono" id="rCmd"></div>
+        <p class="muted small">时长写得越短，越容易插进「空闲但预留」的空档（backfill）。预估只是询问调度器，不会提交作业。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" id="gpus">
+    <div class="head">
+      <h2>GPU</h2>
+      <select id="partSel" title="按分区筛选"><option value="">全部分区</option></select>
+      <span class="spacer"></span>
+      <span class="legend">
+        <span><span class="pip"></span>空闲</span>
+        <span title="节点处于 PLANNED：调度器已为排队中的作业预留这些空闲资源，未必能用上"><span class="pip planned"></span>空闲但预留</span>
+        <span title="卡空着，但节点 CPU 或内存已分配完，调度不上去"><span class="pip stranded"></span>卡空但缺 CPU</span>
+        <span><span class="pip used"></span>占用</span>
+        <span><span class="pip off"></span>不可用</span>
+      </span>
+      <label class="muted"><input type="checkbox" id="onlyFree"> 只看有空卡</label>
+    </div>
+    <div class="chips" id="chips"></div>
+    <div class="body" id="gpuBody"><div class="empty">等待连接…</div></div>
+  </section>
+
+  <section class="card" id="files">
+    <div class="head">
+      <h2>文件</h2><span class="spacer"></span>
+      <button class="ghost" id="newDir">新建文件夹</button>
+      <button class="ghost" id="newFile">新建文件</button>
+      <button class="ghost" id="upload" title="上传到当前目录（也可以直接把文件拖进来）">上传</button>
+      <input type="file" id="uploadInput" multiple hidden>
+      <button class="ghost" id="duBtn" title="统计当前目录下每项占用">分析占用</button>
+      <button class="ghost" id="cdTerm" title="在终端里 cd 到这里">终端 cd 到此</button>
+    </div>
+    <div class="pathbar">
+      <button id="upBtn" title="上一级">↑</button>
+      <button id="homeBtn" title="主目录">~</button>
+      <input id="pathInput" class="mono" spellcheck="false">
+    </div>
+    <div class="fsbar" id="fsBar"></div>
+    <div class="body" id="fileBody"><div class="empty">等待连接…</div></div>
+    <div class="disk mono" id="disk"></div>
+  </section>
+
+  <section class="card" id="term">
+    <div class="head">
+      <h2>终端</h2><span class="muted" id="termState"></span><span class="spacer"></span>
+      <button class="ghost" id="termReconnect">重新连接</button>
+    </div>
+    <div id="termBox"></div>
+  </section>
+</main>
+
+<dialog id="pwDialog" style="width: min(440px, 92vw)">
+  <div class="head"><b>自动登录</b><span style="flex:1"></span><button id="pwClose">关闭</button></div>
+  <div class="pwbody">
+    <p class="muted">密码保存在 macOS 钥匙串里（不写入任何文件），之后打开页面会自动登录。网页只能写入或删除，读不回已保存的密码。</p>
+    <p>当前：<b id="pwState"></b></p>
+    <form id="pwForm" autocomplete="off">
+      <input type="password" id="pwInput" placeholder="Babel 密码" autocomplete="new-password">
+      <button type="submit">保存</button>
+    </form>
+    <p class="err" id="pwErr" style="padding:0"></p>
+    <div style="display:flex; gap:8px">
+      <button id="pwRetry">立即登录</button>
+      <button id="pwDelete">删除已保存密码</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="jobDlg">
+  <div class="head"><b id="jName"></b><span class="badge" id="jState"></span><span style="flex:1"></span>
+    <button id="jShell" title="srun --overlap 进入作业所在节点的 shell，不影响作业本身">进入节点</button>
+    <button id="jCancel" class="ghost">取消作业</button><button id="jClose">关闭</button></div>
+  <div class="kv mono small" id="jKv"></div>
+  <div id="jGpu"></div>
+  <div class="logbar">
+    <select id="jLogSel"></select>
+    <span class="muted small mono" id="jLogPath"></span>
+    <label class="muted small"><input type="checkbox" id="jFollow" checked> 自动滚动</label>
+    <button class="ghost small" id="jLogDl">下载</button>
+  </div>
+  <pre class="mono" id="logText"></pre>
+</dialog>
+
+<dialog id="editDlg">
+  <div class="head">
+    <span class="dirty" id="editDirty" hidden title="有未保存的修改">●</span>
+    <b class="mono path" id="editPath"></b><span style="flex:1"></span>
+    <span class="muted small" id="editStatus"></span>
+    <button id="editSave" title="⌘S">保存</button>
+    <button id="editClose">关闭</button>
+  </div>
+  <div id="editBox"></div>
+  <div id="editMsg" hidden></div>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const api = async (path, opts) => {
+  const r = await fetch(path, opts);
+  let j;
+  try { j = await r.json(); }
+  catch {
+    // A 404 here means the page is newer than the running server.py.
+    throw new Error(r.status === 404
+      ? "服务端没有这个功能，可能是代码更新后还没重启：在终端运行 babel-ui-stop && babel-ui"
+      : `服务端返回了 ${r.status} ${r.statusText}`);
+  }
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+};
+const human = (b) => {
+  const u = ["B","K","M","G","T"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return (i ? b.toFixed(b < 10 ? 1 : 0) : b) + u[i];
+};
+const ago = (sec) => {
+  const d = Date.now() / 1000 - sec;
+  if (d < 60) return "刚刚";
+  if (d < 3600) return Math.floor(d / 60) + " 分钟前";
+  if (d < 86400) return Math.floor(d / 3600) + " 小时前";
+  if (d < 86400 * 30) return Math.floor(d / 86400) + " 天前";
+  return new Date(sec * 1000).toLocaleDateString();
+};
+
+let connected = false;
+let myNodes = new Set();
+let gpuData = [];
+let gpuFilter = null;
+let cwd = "";
+
+// ---------------------------------------------------------- connection
+async function pollStatus() {
+  try {
+    const s = await api("/api/status");
+    $("host").textContent = s.host;
+    const was = connected;
+    connected = s.connected;
+    $("dot").classList.toggle("on", connected);
+    lastStatus = s;
+    $("connHint").textContent = connected ? "" :
+      s.login === "running" ? "自动登录中…（有 Duo 的话请在手机上确认）" :
+      s.login === "failed" ? "自动登录失败，点右上角 🔑 查看" :
+      s.has_password ? "正在连接…" : "未连接：在「终端」页登录，或点右上角 🔑 保存密码";
+    renderPw();
+    if (connected && !was) refreshAll(true);
+    if (!connected && !was && !location.hash) showTab("term");
+  } catch { /* server down */ }
+}
+
+// ---------------------------------------------------------- saved password
+let lastStatus = {};
+function renderPw() {
+  const s = lastStatus;
+  $("pwState").textContent = !s.has_password ? "未保存" :
+    s.login === "failed" ? "已保存，但上次自动登录失败" : "已保存";
+  $("pwErr").textContent = s.login === "failed" ? s.login_error : "";
+}
+$("pwBtn").onclick = () => { renderPw(); $("pwDialog").showModal(); $("pwInput").focus(); };
+$("pwClose").onclick = () => $("pwDialog").close();
+$("pwForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const password = $("pwInput").value;
+  if (!password) return;
+  await api("/api/password", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({password}) });
+  $("pwInput").value = "";
+  await pollStatus();
+};
+$("pwDelete").onclick = async () => {
+  if (!confirm("删除钥匙串里保存的密码？")) return;
+  await api("/api/password", { method: "DELETE" });
+  await pollStatus();
+};
+$("pwRetry").onclick = async () => {
+  $("pwState").textContent = "登录中…";
+  await api("/api/login", { method: "POST" });
+  await pollStatus();
+  if (connected && !(ws && ws.readyState === 1)) connectTerm();
+};
+
+// ---------------------------------------------------------- jobs
+async function loadJobs() {
+  if (!connected) return;
+  try {
+    const d = await api("/api/queue");
+    myNodes = new Set();
+    d.jobs.filter(j => j.state === "RUNNING").forEach(j => expandNodes(j.reason).forEach(n => myNodes.add(n)));
+    $("jobCount").textContent = d.jobs.length ? `${d.jobs.length} 个` : "";
+    $("jobsTabCount").textContent = d.jobs.length || "";
+    if (!d.jobs.length) {
+      $("jobsBody").innerHTML = `<div class="empty">没有排队或运行中的作业</div>`;
+    } else {
+      $("jobsBody").innerHTML = `<table><thead><tr>
+        <th>ID</th><th>名称</th><th>分区</th><th>状态</th><th>已运行 / 上限</th><th>资源</th><th>节点 / 原因</th><th>预计开始</th><th></th>
+      </tr></thead><tbody>${d.jobs.map(j => `<tr class="click" data-job="${esc(j.id)}">
+        <td class="mono">${esc(j.id)}</td>
+        <td title="${esc(j.name)}">${esc(j.name.length > 28 ? j.name.slice(0, 27) + "…" : j.name)}</td>
+        <td>${esc(j.partition)}</td>
+        <td><span class="badge ${esc(j.state)}">${esc(j.state)}</span></td>
+        <td class="mono">${esc(j.elapsed)} / ${esc(j.limit)}</td>
+        <td class="mono">${esc(j.cpus)}c ${esc(j.gres === "N/A" ? "" : j.gres.replace(/^gres[:/]/, ""))}</td>
+        <td class="mono">${esc(j.reason)}</td>
+        <td class="mono muted">${j.state === "PENDING" && j.start !== "N/A" ? esc(j.start.replace("T", " ")) : ""}</td>
+        <td style="white-space:nowrap">${j.state === "RUNNING"
+          ? `<button class="ghost small" data-enter="${esc(j.id)}" title="进入作业所在节点的 shell">进入</button>` : ""}<button
+          class="ghost" data-cancel="${esc(j.id)}" title="scancel">✕</button></td>
+      </tr>`).join("")}</tbody></table>`;
+    }
+    // Babel has dozens of lab partitions; headline the shared ones plus any you have jobs in.
+    const all = Object.keys({...d.pending, ...d.running}).sort();
+    const mine = new Set(["general", "preempt", "debug", ...d.jobs.map(j => j.partition)]);
+    const fmt = p => `${esc(p)} 运行 ${d.running[p] || 0} · 排队 ${d.pending[p] || 0}`;
+    const open = $("qline").querySelector("details")?.open ? "open" : "";
+    $("qline").innerHTML = "集群：" + all.filter(p => mine.has(p)).map(fmt).join("　|　") +
+      `　<details ${open}><summary>全部 ${all.length} 个分区</summary>${all.map(fmt).join("　|　")}</details>`;
+    renderGpus();
+    stamp();
+  } catch (e) {
+    $("jobsBody").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+
+// "babel-1-[3,5-7],babel-2-1" -> ["babel-1-3","babel-1-5",...]
+function expandNodes(s) {
+  const out = [];
+  for (const m of (s || "").matchAll(/([^,\[]+)(?:\[([^\]]+)\])?/g)) {
+    if (!m[2]) { out.push(m[1]); continue; }
+    for (const r of m[2].split(",")) {
+      const [a, b] = r.split("-");
+      if (b === undefined) { out.push(m[1] + a); continue; }
+      for (let i = +a; i <= +b; i++) out.push(m[1] + String(i).padStart(a.length, "0"));
+    }
+  }
+  return out;
+}
+
+$("jobsBody").addEventListener("click", async (e) => {
+  if (e.target.dataset.enter) return enterJob(e.target.dataset.enter);
+  const id = e.target.dataset.cancel;
+  if (!id) {
+    const row = e.target.closest("tr[data-job]");
+    if (row) openJob(row.dataset.job);
+    return;
+  }
+  if (await cancelJob(id)) loadJobs();
+});
+
+async function cancelJob(id) {
+  if (!confirm(`取消作业 ${id}？`)) return false;
+  const r = await api("/api/cancel", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id}) });
+  if (!r.ok) alert(r.error);
+  return r.ok;
+}
+
+// ---------------------------------------------------------- helpers
+function toast(msg, ms = 4000) {
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), ms);
+  return t;
+}
+const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+function pasteToTerm(text) {
+  if (!(ws && ws.readyState === 1)) { toast("终端未连接"); return false; }
+  ws.send(JSON.stringify({ t: "i", d: text }));
+  showTab("term");
+  return true;
+}
+// "billing=28,cpu=4,gres/gpu:l40s=1,gres/gpu=1,mem=32G,node=1" -> "4c 32G l40s×1"
+function tresShort(t) {
+  const kv = Object.fromEntries((t || "").split(",").map(x => x.split("=")));
+  const typed = Object.keys(kv).find(k => k.startsWith("gres/gpu:"));
+  const gpu = typed ? `${typed.slice(9)}×${kv[typed]}` : kv["gres/gpu"] ? `gpu×${kv["gres/gpu"]}` : "";
+  return [kv.cpu && kv.cpu + "c", kv.mem, gpu].filter(Boolean).join(" ");
+}
+const untilText = (iso) => {
+  const h = (new Date(iso) - Date.now()) / 3600e3;
+  if (isNaN(h)) return "";
+  if (h <= 0.05) return "（现在就能开始）";
+  return h < 1 ? `（约 ${Math.round(h * 60)} 分钟后）` : h < 48 ? `（约 ${h.toFixed(1)} 小时后）` : `（约 ${(h / 24).toFixed(1)} 天后）`;
+};
+
+// ---------------------------------------------------------- job detail: logs + gpu
+let jd = null;  // { job, path, next, timer, busy }
+
+async function openJob(id) {
+  if (jd) clearInterval(jd.timer);
+  jd = null;
+  $("jName").textContent = `作业 ${id}`;
+  $("jState").textContent = "";
+  $("jKv").innerHTML = "";
+  $("jGpu").innerHTML = "";
+  $("jLogSel").innerHTML = "";
+  $("jLogPath").textContent = "";
+  $("logText").textContent = "加载中…";
+  if (!$("jobDlg").open) $("jobDlg").showModal();
+  let job;
+  try { job = await api("/api/job?id=" + encodeURIComponent(id)); }
+  catch (e) { $("logText").textContent = e.message; return; }
+  jd = { job, path: "", next: -1, timer: null, busy: false };
+  const state = job.state.split(" ")[0];
+  $("jName").textContent = `${job.name} (${job.id})`;
+  $("jState").textContent = state;
+  $("jState").className = "badge " + state;
+  $("jCancel").hidden = !/RUNNING|PENDING/.test(state);
+  $("jShell").hidden = state !== "RUNNING";
+  const kv = [["分区", job.partition], ["节点", job.nodes], ["资源", tresShort(job.tres) || job.tres],
+              ["运行", `${job.runtime} / ${job.limit}`], ["目录", job.workdir], ["命令", job.command]];
+  if (job.reason && job.reason !== "None") kv.push(["原因", job.reason]);
+  $("jKv").innerHTML = kv.map(([k, v]) => `<div title="${esc(v)}"><b>${k}</b>${esc(v || "—")}</div>`).join("");
+  const logs = [["stdout", job.stdout], ["stderr", job.stderr]].filter(x => x[1]);
+  $("jLogSel").innerHTML = logs.map(([k, p]) => `<option value="${esc(p)}">${k}</option>`).join("")
+    || `<option value="">（没有日志路径）</option>`;
+  switchLog();
+  if (state === "RUNNING" && /gpu/.test(job.tres)) loadJobGpu();
+  jd.timer = setInterval(() => { if (/RUNNING|PENDING|COMPLETING/.test(state)) pollLog(); }, 2500);
+}
+
+function switchLog() {
+  jd.path = $("jLogSel").value;
+  jd.next = -1;
+  $("jLogPath").textContent = jd.path;
+  $("logText").textContent = jd.path ? "" : "这个作业没有记录日志路径";
+  pollLog();
+}
+
+async function pollLog() {
+  if (!jd || !jd.path || jd.busy) return;
+  jd.busy = true;
+  const path = jd.path;
+  try {
+    const r = await api(`/api/tail?path=${encodeURIComponent(path)}&offset=${jd.next}`);
+    if (!jd || path !== jd.path) return;
+    const pre = $("logText");
+    if (!r.exists) {
+      pre.textContent = jd.job.state.startsWith("PENDING") ? "作业还没开始，日志文件还没创建" : "日志文件不存在（可能被删了）";
+      return;
+    }
+    if (jd.next < 0 || r.start !== jd.next) {
+      pre.textContent = (r.start > 0 ? `…（文件共 ${human(r.size)}，只显示最后 ${human(r.size - r.start)}）\n` : "") + r.text;
+    } else if (r.text) {
+      pre.textContent += r.text;
+      if (pre.textContent.length > 2e6) pre.textContent = pre.textContent.slice(-1e6);
+    }
+    jd.next = r.next;
+    if ($("jFollow").checked) pre.scrollTop = pre.scrollHeight;
+  } catch (e) {
+    $("logText").textContent = e.message;
+  } finally {
+    if (jd) jd.busy = false;
+  }
+}
+
+async function loadJobGpu() {
+  const id = jd.job.id;
+  $("jGpu").innerHTML = `<div class="muted small" style="padding:6px 12px">正在节点上读取 GPU 利用率…</div>`;
+  try {
+    const r = await api("/api/job/gpu?id=" + encodeURIComponent(id));
+    if (!jd || jd.job.id !== id) return;
+    const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
+    $("jGpu").innerHTML =
+      `<div class="logbar" style="border-top:none"><b class="small">GPU 利用率</b><span style="flex:1"></span>` +
+      `<button class="ghost small" id="jGpuRefresh">刷新</button></div>` +
+      r.gpus.map(g => `<div class="gpurow small mono"><span>#${g.index}</span>
+        <span>算力 ${g.util}%<div class="meter"><i style="width:${g.util}%"></i></div></span>
+        <span>显存 ${(g.mem_used / 1024).toFixed(1)} / ${(g.mem_total / 1024).toFixed(0)} GB
+          <div class="meter"><i style="width:${pct(g.mem_used, g.mem_total)}%"></i></div></span></div>`).join("") +
+      (r.gpus.some(g => g.util < 5)
+        ? `<div class="small" style="padding:4px 12px 8px;color:var(--warn)">有卡算力利用率低于 5%：可能卡在数据加载、在做 CPU 预处理，或者代码没用上这块卡</div>` : "");
+    $("jGpuRefresh").onclick = loadJobGpu;
+  } catch (e) {
+    $("jGpu").innerHTML = `<div class="err small">GPU 利用率读取失败：${esc(e.message)}</div>`;
+  }
+}
+
+// Step into a running job's allocation; exiting the shell leaves the job running.
+function enterJob(id) {
+  if (pasteToTerm(`srun --jobid=${id} --overlap --pty bash -l\r`)) $("jobDlg").close();
+}
+$("jShell").onclick = () => { if (jd) enterJob(jd.job.id); };
+$("jLogSel").onchange = switchLog;
+$("jClose").onclick = () => $("jobDlg").close();
+$("jobDlg").addEventListener("close", () => { if (jd) clearInterval(jd.timer); jd = null; });
+$("jCancel").onclick = async () => { if (jd && await cancelJob(jd.job.id)) { loadJobs(); openJob(jd.job.id); } };
+$("jLogDl").onclick = () => { if (jd?.path) location.href = "/api/download?path=" + encodeURIComponent(jd.path); };
+
+// ---------------------------------------------------------- history
+let histJobs = [];
+async function loadHist() {
+  if (!connected) return;
+  try {
+    histJobs = (await api("/api/history?days=" + $("histDays").value)).jobs;
+    $("histBody").innerHTML = !histJobs.length ? `<div class="empty">这段时间没有作业</div>` :
+      `<table><thead><tr><th>ID</th><th>名称</th><th>分区</th><th>状态</th><th>退出码</th><th>用时</th>
+        <th>开始</th><th>资源</th><th>节点</th><th></th></tr></thead><tbody>${histJobs.map(j => {
+        const st = j.state.split(" ")[0];
+        return `<tr class="click" data-job="${esc(j.id)}">
+          <td class="mono">${esc(j.id)}</td>
+          <td title="${esc(j.name)}">${esc(j.name.length > 28 ? j.name.slice(0, 27) + "…" : j.name)}</td>
+          <td>${esc(j.partition)}</td>
+          <td><span class="badge ${esc(st)}">${esc(st)}</span></td>
+          <td class="mono ${j.exit !== "0:0" ? "" : "muted"}">${esc(j.exit)}</td>
+          <td class="mono">${esc(j.elapsed)}</td>
+          <td class="mono muted">${esc(j.start.replace("T", " "))}</td>
+          <td class="mono">${esc(tresShort(j.tres))}</td>
+          <td class="mono">${esc(j.nodes)}</td>
+          <td><button class="ghost small" data-resubmit="${esc(j.id)}" title="${esc(j.submit_line)}">重新提交</button></td>
+        </tr>`;
+      }).join("")}</tbody></table>`;
+  } catch (e) {
+    $("histBody").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+$("histDays").onchange = loadHist;
+$("histBody").addEventListener("click", (e) => {
+  const rid = e.target.dataset.resubmit;
+  if (rid) {
+    const j = histJobs.find(x => x.id === rid);
+    if (!j?.submit_line) return toast("这个作业没有记录提交命令");
+    // No Enter: sacct drops the original quoting, so let the user check the line first.
+    if (pasteToTerm(`cd ${shq(j.workdir)} && ${j.submit_line}`)) toast("命令已放进终端，检查无误后按回车提交", 6000);
+    return;
+  }
+  const row = e.target.closest("tr[data-job]");
+  if (row) openJob(row.dataset.job);
+});
+
+// ---------------------------------------------------------- request resources
+let me = null;
+async function loadMe() {
+  if (!connected || me) return;
+  try { me = await api("/api/me"); } catch { return; }
+  $("reqAcct").textContent = `账号 ${me.account} · QoS ${me.qos.join(", ") || "—"}`;
+  $("rPart").innerHTML = me.partitions.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join("")
+    || `<option value="">（没有可用分区）</option>`;
+  renderPartitions();
+  updateReq();
+}
+
+function reqData() {
+  const p = me?.partitions.find(x => x.name === $("rPart").value) || {};
+  // CPU-only jobs go on the partition's CPU QoS when we have one (preempt_qos -> preempt_cpu_qos),
+  // so they don't eat into the GPU QoS job limit.
+  const cpuQos = p.qos?.replace(/_qos$/, "_cpu_qos");
+  const qos = +$("rGpus").value === 0 && me?.qos.includes(cpuQos) ? cpuQos : p.qos || "";
+  return { partition: $("rPart").value, qos, gpu_type: $("rType").value,
+           gpus: String($("rGpus").value || 0), cpus: String($("rCpus").value || 1),
+           mem: ($("rMem").value || 1) + "G", time: $("rTime").value.trim() };
+}
+
+function reqOpts(d) {
+  const o = [`--partition=${d.partition}`];
+  if (d.qos) o.push(`--qos=${d.qos}`);
+  if (+d.gpus) o.push(`--gres=gpu:${d.gpu_type ? d.gpu_type + ":" : ""}${d.gpus}`);
+  o.push(`--cpus-per-task=${d.cpus}`, `--mem=${d.mem}`, `--time=${d.time}`);
+  return o;
+}
+
+function updateReq() {
+  const d = reqData();
+  const p = me?.partitions.find(x => x.name === d.partition);
+  $("rPartInfo").textContent = p
+    ? `QoS ${d.qos} · 默认时长 ${p.default_time} · 最长 ${p.max_time}${p.limit?.tres ? " · 每人上限 " + p.limit.tres : ""}` : "";
+  const nodes = gpuData.filter(n => partsOf(n).includes(d.partition));
+  const types = [...new Set(nodes.map(n => n.type))].sort();
+  $("rType").innerHTML = `<option value="">任意型号</option>` +
+    types.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+  $("rType").value = types.includes(d.gpu_type) ? d.gpu_type : "";
+  let free = 0, planned = 0;
+  for (const n of nodes) {
+    if ($("rType").value && n.type !== $("rType").value) continue;
+    const idle = Math.max(0, n.total - n.used), k = freeKind(n);
+    if (k === "") free += idle; else if (k === "planned") planned += idle;
+  }
+  $("rAvail").innerHTML = gpuData.length ? `此刻 <b style="color:${free ? "var(--ok)" : "var(--muted)"}">${free}</b> 块空闲 · ${planned} 块预留` : "";
+  $("rCmd").textContent = "sbatch " + reqOpts(reqData()).join(" ") + " your_script.sh";
+}
+
+$("req").addEventListener("input", (e) => { if (e.target.matches("input, select")) updateReq(); });
+$("req").addEventListener("click", (e) => {
+  if (e.target.dataset.t) { $("rTime").value = e.target.dataset.t; updateReq(); }
+});
+
+$("rEstimate").onclick = async () => {
+  const box = $("rResult");
+  box.hidden = false;
+  box.className = "result";
+  box.textContent = "正在询问调度器…";
+  try {
+    const r = await api("/api/estimate", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(reqData()) });
+    if (r.ok) {
+      box.className = "result good";
+      box.textContent = `预计开始：${r.start.replace("T", " ")} ${untilText(r.start)}\n节点：${r.nodes}`;
+    } else {
+      box.textContent = "调度器拒绝了这个申请：\n" + r.text;
+    }
+  } catch (e) {
+    box.textContent = e.message;
+  }
+};
+// Babel's preempt (and likely others) rejects salloc/srun allocations ("Only sbatch jobs
+// are allowed"), so hold the resources with a sleeping sbatch job and step into it.
+// The subshell's EXIT trap scancels the holder on exit, Ctrl-C, or a dropped terminal
+// (HUP) — scancel runs first because echo may fail once the tty is gone.
+function interactiveCmd(opts) {
+  return `( jid=$(sbatch --parsable --job-name=interactive ${opts.join(" ")} --wrap="sleep infinity") || exit 1; ` +
+    `trap 'scancel $jid; echo; echo "已释放作业 $jid"' EXIT; trap 'exit 130' INT TERM HUP; ` +
+    `echo "已提交占位作业 $jid，等待分配资源（Ctrl-C 取消并撤回）…"; ` +
+    `while :; do s=$(squeue -h -j $jid -o %T); [ "$s" = RUNNING ] && break; ` +
+    `[ -z "$s" ] && { echo "作业已结束"; exit 1; }; sleep 5; done; ` +
+    `srun --jobid=$jid --overlap --pty bash -l )`;
+}
+$("rSalloc").onclick = () => {
+  const opts = reqOpts(reqData());
+  if (confirm(`将在终端里提交一个占位作业：\n\nsbatch ${opts.join(" ")} --wrap="sleep infinity"\n\n` +
+              `开始运行后自动进入计算节点的 shell。exit 退出或等待时按 Ctrl-C，都会自动 scancel 释放资源。`))
+    pasteToTerm(interactiveCmd(opts) + "\r");
+};
+$("rCopy").onclick = async () => {
+  const text = reqOpts(reqData()).map(o => "#SBATCH " + o).join("\n");
+  try { await navigator.clipboard.writeText(text); toast("已复制：\n" + text); }
+  catch { toast(text, 8000); }
+};
+
+// ---------------------------------------------------------- notifications
+async function loadNotify() {
+  try { $("notifyOn").checked = (await api("/api/notify")).on; } catch {}
+}
+$("notifyOn").onchange = () => api("/api/notify", { method: "POST", headers: {"Content-Type": "application/json"},
+  body: JSON.stringify({ on: $("notifyOn").checked }) });
+$("notifyTest").onclick = () => api("/api/notify", { method: "POST", headers: {"Content-Type": "application/json"},
+  body: JSON.stringify({ test: true }) });
+
+// ---------------------------------------------------------- gpus
+const UNAVAIL = /DOWN|DRAIN|FAIL|NOT_RESPONDING|MAINT|POWER|\*/;
+const PLANNED = /PLANNED/;
+// Idle GPUs are only grabbable if the node also has CPU and memory left.
+const stranded = n => n.cpu_free <= 0 || n.mem_free_gb < 8;
+const freeKind = n => UNAVAIL.test(n.state) ? "off" : stranded(n) ? "stranded" : PLANNED.test(n.state) ? "planned" : "";
+
+async function loadGpus() {
+  if (!connected) return;
+  try {
+    gpuData = (await api("/api/gpus")).nodes;
+    renderPartitions();
+    renderGpus();
+    updateReq();
+    stamp();
+  } catch (e) {
+    $("gpuBody").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+
+const partsOf = n => n.partitions.split(",").filter(Boolean);
+
+function renderPartitions() {
+  // Partitions that contain GPU nodes, biggest first.
+  const total = {};
+  for (const n of gpuData) for (const p of partsOf(n)) total[p] = (total[p] || 0) + n.total;
+  // Partitions my QoS can submit to go first, marked ✓.
+  const mine = new Set((me?.partitions || []).map(p => p.name));
+  const cur = $("partSel").value;
+  $("partSel").innerHTML = `<option value="">全部分区</option>` +
+    Object.entries(total).sort((a, b) => mine.has(b[0]) - mine.has(a[0]) || b[1] - a[1])
+      .map(([p, t]) => `<option value="${esc(p)}">${mine.has(p) ? "✓ " : ""}${esc(p)}（${t} 卡）</option>`).join("");
+  $("partSel").value = total[cur] ? cur : "";
+}
+
+function renderGpus() {
+  if (!gpuData.length) return;
+  const part = $("partSel").value;
+  const inPart = gpuData.filter(n => !part || partsOf(n).includes(part));
+  const types = {};
+  for (const n of inPart) {
+    const t = types[n.type] ||= { total: 0, free: 0, planned: 0 };
+    t.total += n.total;
+    const idle = Math.max(0, n.total - n.used), k = freeKind(n);
+    if (k === "planned") t.planned += idle; else if (k === "") t.free += idle;
+  }
+  if (gpuFilter && !types[gpuFilter]) gpuFilter = null;
+  const freeAll = Object.values(types).reduce((s, t) => s + t.free, 0);
+  $("gpuTabCount").textContent = `${freeAll} 空`;
+  const sorted = Object.entries(types).sort((a, b) => b[1].free - a[1].free || b[1].planned - a[1].planned);
+  $("chips").innerHTML = sorted.map(([t, v]) =>
+    `<span class="chip ${gpuFilter === t ? "active" : ""}" data-type="${esc(t)}">${esc(t)} <b style="color:${v.free ? "var(--ok)" : "var(--muted)"}">${v.free}</b>` +
+    `${v.planned ? `<span class="muted"> +${v.planned} 预留</span>` : ""}<span class="muted"> / ${v.total}</span></span>`
+  ).join("");
+
+  const onlyFree = $("onlyFree").checked;
+  // Most grabbable first: free GPUs, then planned-free, unavailable nodes last.
+  const rank = n => freeKind(n) === "off" ? -1 :
+    ({ "": 100, planned: 10, stranded: 1 })[freeKind(n)] * (n.total - n.used);
+  const rows = inPart.filter(n => (!gpuFilter || n.type === gpuFilter) &&
+    (!onlyFree || (["", "planned"].includes(freeKind(n)) && n.used < n.total)))
+    .sort((a, b) => rank(b) - rank(a) || a.name.localeCompare(b.name));
+  $("gpuBody").innerHTML = rows.map(n => {
+    const k = freeKind(n);
+    const used = new Set(n.used_idx);
+    const pips = Array.from({length: n.total}, (_, i) =>
+      `<span class="pip ${k === "off" ? "off" : used.has(i) ? "used" : k}"></span>`).join("");
+    return `<div class="node ${myNodes.has(n.name) ? "mine" : ""}" title="${esc(n.partitions)}">
+      <span class="name mono">${esc(n.name)}</span>
+      <span><span class="pips">${pips}</span></span>
+      <span class="meta">${esc(n.type)} · ${esc(n.state.toLowerCase())} · CPU ${esc(n.cpus)} · 内存 ${esc(n.mem_gb)}G · ${esc(partsOf(n).join(", "))}</span>
+    </div>`;
+  }).join("") || `<div class="empty">没有符合条件的节点</div>`;
+}
+
+$("chips").addEventListener("click", (e) => {
+  const c = e.target.closest(".chip");
+  if (!c) return;
+  gpuFilter = gpuFilter === c.dataset.type ? null : c.dataset.type;
+  renderGpus();
+});
+$("onlyFree").addEventListener("change", renderGpus);
+$("partSel").addEventListener("change", renderGpus);
+
+// ---------------------------------------------------------- files
+let selected = new Set();   // names in cwd
+let clip = null;            // { mode: "copy" | "cut", paths: [abs], from: dir }
+
+async function loadDir(path) {
+  if (!connected) return;
+  try {
+    const d = await api("/api/ls?path=" + encodeURIComponent(path ?? cwd));
+    if (d.cwd !== cwd) selected.clear();
+    cwd = d.cwd;
+    $("pathInput").value = cwd;
+    const entries = d.entries.sort((a, b) =>
+      (b.type === "d") - (a.type === "d") || a.name.localeCompare(b.name));
+    const names = new Set(entries.map(f => f.name));
+    selected = new Set([...selected].filter(n => names.has(n)));
+    renderFiles(entries);
+  } catch (e) {
+    $("fileBody").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+  renderFsBar();
+}
+
+function renderFiles(entries, du) {
+  const max = du ? Math.max(1, ...Object.values(du)) : 0;
+  const cut = new Set(clip?.mode === "cut" ? clip.paths : []);
+  $("fileBody").innerHTML = entries.map(f => {
+    const icon = f.type === "d" ? "📁" : f.type === "l" ? "🔗" : "📄";
+    const sizeB = du && du[f.name] != null ? du[f.name] * 1024 : (f.type === "d" ? null : f.size);
+    const on = selected.has(f.name);
+    return `<div class="frow ${on ? "sel" : ""} ${cut.has(join(cwd, f.name)) ? "cut" : ""}" data-name="${esc(f.name)}" data-type="${f.type}">
+      <input type="checkbox" class="pick" ${on ? "checked" : ""}>
+      <span>${icon}</span>
+      <span class="n mono" title="${esc(f.name)}">${esc(f.name)}</span>
+      <span class="s mono">${sizeB == null ? "" : human(sizeB)}</span>
+      <span class="t">${ago(f.mtime)}</span>
+      <button class="ghost dl" data-dl="1" title="${f.type === "d" ? "打包下载（.tar.gz）" : "下载"}">⬇</button>
+      ${du && du[f.name] != null ? `<span class="bar" style="width:${(du[f.name] / max * 100).toFixed(1)}%"></span>` : ""}
+    </div>`;
+  }).join("") || `<div class="empty">空目录</div>`;
+  $("fileBody").dataset.entries = JSON.stringify(entries);
+}
+
+const join = (dir, name) => (dir === "/" ? "" : dir) + "/" + name;
+
+$("fileBody").addEventListener("click", async (e) => {
+  const row = e.target.closest(".frow");
+  if (!row) return;
+  const name = row.dataset.name;
+  const p = join(cwd, name);
+  if (e.target.classList.contains("pick")) {
+    if (e.target.checked) selected.add(name); else selected.delete(name);
+    row.classList.toggle("sel", e.target.checked);
+    return renderFsBar();
+  }
+  if (e.target.dataset.dl) {
+    location.href = "/api/download?path=" + encodeURIComponent(p);
+    return;
+  }
+  if (row.dataset.type === "d" || row.dataset.type === "l") {
+    try { await api("/api/ls?path=" + encodeURIComponent(p)); return loadDir(p); }
+    catch { if (row.dataset.type === "d") return; }
+  }
+  openEditor(p);
+});
+
+// ---------------------------------------------------------- file operations
+async function fsCall(body) {
+  try {
+    const r = await api("/api/fs", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
+    if (r.skipped?.length) toast(`目标位置已有同名项，跳过：${r.skipped.join("、")}`, 6000);
+    return r;
+  } catch (e) {
+    toast("操作失败：" + e.message, 6000);
+    return null;
+  } finally {
+    loadDir(cwd);
+  }
+}
+
+function renderFsBar() {
+  const n = selected.size;
+  const parts = [];
+  if (n) parts.push(`<span class="grp"><b>已选 ${n} 项</b>
+    <button class="ghost" data-fs="copy">复制</button>
+    <button class="ghost" data-fs="cut">剪切</button>
+    ${n === 1 ? `<button class="ghost" data-fs="rename">重命名</button>` : ""}
+    <button class="ghost danger" data-fs="delete">删除</button>
+    <button class="ghost" data-fs="none">取消选择</button></span>`);
+  else parts.push(`<span class="grp"><button class="ghost" data-fs="all">全选</button></span>`);
+  if (clip) parts.push(`<span class="grp">剪贴板：${clip.paths.length} 项（${clip.mode === "cut" ? "剪切" : "复制"}）
+    <button data-fs="paste">粘贴到这里</button>
+    <button class="ghost" data-fs="clear">清空</button></span>`);
+  $("fsBar").innerHTML = (n || clip || $("fileBody").querySelector(".frow")) ? parts.join("") : "";
+}
+
+$("fsBar").addEventListener("click", async (e) => {
+  const act = e.target.dataset.fs;
+  if (!act) return;
+  const paths = [...selected].map(n => join(cwd, n));
+  if (act === "all") {
+    $("fileBody").querySelectorAll(".frow").forEach(r => selected.add(r.dataset.name));
+    return loadDir(cwd);
+  }
+  if (act === "none") { selected.clear(); return loadDir(cwd); }
+  if (act === "copy" || act === "cut") {
+    clip = { mode: act, paths, from: cwd };
+    selected.clear();
+    toast(`已${act === "cut" ? "剪切" : "复制"} ${paths.length} 项，去目标目录点「粘贴到这里」`);
+    return loadDir(cwd);
+  }
+  if (act === "clear") { clip = null; return loadDir(cwd); }
+  if (act === "paste") {
+    const c = clip;
+    if (c.mode === "cut" && c.from === cwd) return toast("已经在这个目录里了");
+    const r = await fsCall({ op: c.mode === "cut" ? "move" : "copy", paths: c.paths, dest: cwd });
+    if (r) {
+      if (c.mode === "cut") clip = null;
+      const done = c.paths.length - (r.skipped?.length || 0);
+      if (done) toast(`已${c.mode === "cut" ? "移动" : "复制"} ${done} 项到 ${cwd}`);
+    }
+    return;
+  }
+  if (act === "rename") {
+    const old = [...selected][0];
+    const name = prompt("新名字：", old);
+    if (!name || name === old) return;
+    if (await fsCall({ op: "rename", path: paths[0], name })) selected.clear();
+    return;
+  }
+  if (act === "delete") {
+    const names = [...selected];
+    const list = names.slice(0, 15).join("\n") + (names.length > 15 ? `\n…等共 ${names.length} 项` : "");
+    if (!confirm(`永久删除这 ${names.length} 项？文件夹会连同里面的内容一起删除。\nBabel 上没有回收站，删了找不回来。\n\n${list}`)) return;
+    if (await fsCall({ op: "delete", paths })) { selected.clear(); toast(`已删除 ${names.length} 项`); }
+  }
+});
+
+$("newDir").onclick = async () => {
+  const name = prompt(`在 ${cwd} 新建文件夹：`);
+  if (name) await fsCall({ op: "mkdir", dir: cwd, name });
+};
+$("newFile").onclick = async () => {
+  const name = prompt(`在 ${cwd} 新建文件：`, "untitled.py");
+  if (name && await fsCall({ op: "touch", dir: cwd, name })) openEditor(join(cwd, name));
+};
+
+// ---------------------------------------------------------- editor
+const MODES = {
+  py: "python", sh: "shell", bash: "shell", zsh: "shell", sbatch: "shell", slurm: "shell",
+  yaml: "yaml", yml: "yaml", json: { name: "javascript", json: true }, js: "javascript", ts: "javascript",
+  md: "markdown", toml: "toml", c: "text/x-csrc", h: "text/x-csrc", cpp: "text/x-c++src",
+  cc: "text/x-c++src", hpp: "text/x-c++src", cu: "text/x-c++src", java: "text/x-java",
+};
+function modeFor(path, text) {
+  const base = path.split("/").pop();
+  const ext = base.includes(".") ? base.split(".").pop().toLowerCase() : "";
+  if (MODES[ext]) return MODES[ext];
+  if (/^\.(bashrc|bash_profile|profile|zshrc)$/.test(base) || /^#!.*\b(ba|z)?sh\b/.test(text)) return "shell";
+  if (/^#!.*python/.test(text)) return "python";
+  return null;
+}
+
+const darkMQ = matchMedia("(prefers-color-scheme: dark)");
+let cm = null;
+let ed = null;   // { path, version, clean }
+
+function ensureCM() {
+  if (cm) return cm;
+  cm = CodeMirror($("editBox"), {
+    lineNumbers: true, matchBrackets: true, indentUnit: 4, tabSize: 4, lineWrapping: false,
+    theme: darkMQ.matches ? "material-darker" : "default",
+    extraKeys: { "Cmd-S": () => saveEditor(), "Ctrl-S": () => saveEditor(),
+                 Tab: (c) => c.somethingSelected() ? c.indentSelection("add") : c.replaceSelection(" ".repeat(c.getOption("indentUnit"))) },
+  });
+  cm.on("change", () => markDirty());
+  darkMQ.addEventListener("change", () => cm.setOption("theme", darkMQ.matches ? "material-darker" : "default"));
+  return cm;
+}
+
+function markDirty() {
+  const dirty = ed && !cm.isClean(ed.clean);
+  $("editDirty").hidden = !dirty;
+  return dirty;
+}
+
+async function openEditor(path) {
+  if ($("editDlg").open && !(await closeEditor())) return;
+  ed = null;
+  $("editPath").textContent = path;
+  $("editStatus").textContent = "读取中…";
+  $("editDirty").hidden = true;
+  $("editBox").hidden = true;
+  $("editMsg").hidden = true;
+  $("editSave").hidden = true;
+  $("editDlg").showModal();
+  let r;
+  try { r = await api("/api/read?path=" + encodeURIComponent(path)); }
+  catch (e) { $("editStatus").textContent = ""; $("editMsg").hidden = false; $("editMsg").textContent = e.message; return; }
+  $("editStatus").textContent = human(r.size);
+  if (!r.editable) {
+    $("editMsg").hidden = false;
+    $("editMsg").innerHTML = `${esc(r.reason)}，不能在这里编辑。<br><br>
+      <button onclick="location.href='/api/download?path=' + encodeURIComponent(${esc(JSON.stringify(path))})">下载这个文件</button>`;
+    return;
+  }
+  $("editBox").hidden = false;
+  $("editSave").hidden = false;
+  const c = ensureCM();
+  c.setOption("lineSeparator", r.text.includes("\r\n") ? "\r\n" : null);
+  c.setOption("mode", modeFor(path, r.text));
+  c.setValue(r.text);
+  c.clearHistory();
+  ed = { path, version: r.version, clean: c.changeGeneration() };
+  markDirty();
+  requestAnimationFrame(() => { c.refresh(); c.focus(); });
+}
+
+async function saveEditor(force = false) {
+  if (!ed) return;
+  const gen = cm.changeGeneration();
+  $("editStatus").textContent = "保存中…";
+  const res = await fetch("/api/write", { method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ path: ed.path, text: cm.getValue(), version: ed.version, force }) });
+  const r = await res.json().catch(() => ({}));
+  if (res.status === 409) {
+    $("editStatus").textContent = "冲突";
+    if (confirm("这个文件在你打开之后，已经在 Babel 上被改过了（可能是作业或别的程序写的）。\n\n" +
+                "确定：用你现在的内容覆盖它\n取消：先不保存（可以关掉重新打开看最新内容）")) return saveEditor(true);
+    return;
+  }
+  if (!res.ok || !r.ok) {
+    $("editStatus").textContent = "保存失败";
+    return toast("保存失败：" + (r.error || res.statusText), 6000);
+  }
+  ed.version = r.version;
+  ed.clean = gen;
+  markDirty();
+  $("editStatus").textContent = "已保存 " + new Date().toLocaleTimeString();
+  if (parentOf(ed.path) === cwd) loadDir(cwd);
+}
+const parentOf = (p) => p.replace(/\/[^/]+$/, "") || "/";
+
+async function closeEditor() {
+  if (ed && markDirty() && !confirm("有未保存的修改，确定不保存就关闭？")) return false;
+  ed = null;
+  $("editDlg").close();
+  return true;
+}
+$("editSave").onclick = () => saveEditor();
+$("editClose").onclick = () => closeEditor();
+$("editDlg").addEventListener("cancel", (e) => { e.preventDefault(); closeEditor(); });  // Esc
+addEventListener("beforeunload", (e) => { if (ed && markDirty()) e.preventDefault(); });
+$("upBtn").onclick = () => loadDir(cwd.replace(/\/[^/]+\/?$/, "") || "/");
+$("homeBtn").onclick = () => loadDir("");
+$("pathInput").addEventListener("keydown", (e) => { if (e.key === "Enter") loadDir(e.target.value.trim()); });
+
+$("duBtn").onclick = async () => {
+  const btn = $("duBtn");
+  const dir = cwd;
+  btn.disabled = true; btn.textContent = "统计中…";
+  try {
+    const d = await api("/api/du?path=" + encodeURIComponent(dir));
+    if (dir !== cwd) return;  // user navigated away meanwhile
+    const du = {};
+    for (const r of d.rows) {
+      const name = r.path.split("/").pop();
+      if (r.path.replace(/\/$/, "") !== dir) du[name] = r.kb;
+    }
+    const entries = JSON.parse($("fileBody").dataset.entries || "[]")
+      .sort((a, b) => (du[b.name] ?? 0) - (du[a.name] ?? 0));
+    renderFiles(entries, du);
+    if (d.partial) btn.title = "部分目录无权限或超时，结果可能不完整";
+  } finally {
+    btn.disabled = false; btn.textContent = "分析占用";
+  }
+};
+
+$("cdTerm").onclick = () => {
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({ t: "i", d: `cd '${cwd.replace(/'/g, "'\\''")}'\r` }));
+    showTab("term");
+  }
+};
+
+function uploadFiles(files) {
+  if (!files.length || !cwd) return;
+  const dir = cwd;
+  const fd = new FormData();
+  let total = 0;
+  for (const f of files) { fd.append("f", f, f.name); total += f.size; }
+  const t = toast(`上传 ${files.length} 个文件到 ${dir}…`, 1e9);
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/upload?dir=" + encodeURIComponent(dir));
+  xhr.upload.onprogress = (e) => {
+    if (e.lengthComputable) t.textContent = `上传中 ${Math.round(e.loaded / e.total * 100)}%（${human(e.loaded)} / ${human(total)}）`;
+  };
+  xhr.onload = () => {
+    t.remove();
+    let r;
+    try { r = JSON.parse(xhr.responseText); } catch { return toast("上传失败：" + xhr.statusText); }
+    const bad = (r.results || []).filter(x => !x.ok);
+    toast(bad.length ? "部分失败：\n" + bad.map(x => `${x.name}：${x.error}`).join("\n")
+                     : `已上传 ${r.results.length} 个文件`, bad.length ? 8000 : 3000);
+    if (dir === cwd) loadDir(cwd);
+  };
+  xhr.onerror = () => { t.remove(); toast("上传失败：连接中断"); };
+  xhr.send(fd);
+}
+$("upload").onclick = () => $("uploadInput").click();
+$("uploadInput").onchange = (e) => { uploadFiles([...e.target.files]); e.target.value = ""; };
+$("files").addEventListener("dragover", (e) => { e.preventDefault(); $("files").classList.add("drag"); });
+$("files").addEventListener("dragleave", (e) => { if (!$("files").contains(e.relatedTarget)) $("files").classList.remove("drag"); });
+$("files").addEventListener("drop", (e) => {
+  e.preventDefault();
+  $("files").classList.remove("drag");
+  uploadFiles([...e.dataTransfer.files]);
+});
+
+async function loadDisk() {
+  if (!connected) return;
+  try { $("disk").textContent = (await api("/api/disk")).text.trim(); } catch {}
+}
+
+// ---------------------------------------------------------- terminal
+const term = new Terminal({
+  fontFamily: '"SF Mono", Menlo, monospace', fontSize: 13, cursorBlink: true,
+  theme: { background: getComputedStyle(document.documentElement).getPropertyValue("--term-bg").trim() },
+});
+const fit = new FitAddon.FitAddon();
+term.loadAddon(fit);
+let ws;
+// xterm can't measure inside a display:none tab, so mount on first show; output is buffered until then.
+let termOpened = false;
+
+function sendSize() {
+  if (!termOpened || !$("term").classList.contains("active")) return;
+  fit.fit();
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: "r", cols: term.cols, rows: term.rows }));
+}
+
+function connectTerm() {
+  if (ws) ws.close();
+  term.reset();
+  ws = new WebSocket(`ws://${location.host}/ws/term`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { $("termState").textContent = ""; sendSize(); };
+  ws.onmessage = (e) => { term.write(new Uint8Array(e.data)); };
+  ws.onclose = () => { $("termState").textContent = "已断开"; };
+}
+term.onData((d) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: "i", d })); });
+new ResizeObserver(sendSize).observe($("termBox"));
+$("termReconnect").onclick = connectTerm;
+
+// ---------------------------------------------------------- tabs
+function showTab(name) {
+  if (!$(name)) name = "jobs";
+  document.querySelectorAll("main > .card").forEach(c => c.classList.toggle("active", c.id === name));
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  history.replaceState(null, "", "#" + name);
+  if (name === "hist") loadHist();
+  if (name === "req") loadMe();
+  if (name === "term") requestAnimationFrame(() => {
+    if (!termOpened) { term.open($("termBox")); termOpened = true; }
+    sendSize();
+    term.focus();
+  });
+}
+$("tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b) showTab(b.dataset.tab);
+});
+showTab(location.hash.slice(1));
+
+// ---------------------------------------------------------- loop
+function stamp() { $("updated").textContent = "更新于 " + new Date().toLocaleTimeString(); }
+function refreshAll(withFiles) {
+  loadJobs(); loadGpus(); loadDisk(); loadMe(); loadNotify();
+  if (withFiles) loadDir(cwd);
+  if ($("hist").classList.contains("active")) loadHist();
+}
+$("refreshAll").onclick = () => refreshAll(true);
+
+connectTerm();
+pollStatus();
+setInterval(pollStatus, 4000);
+setInterval(loadJobs, 10000);
+setInterval(loadGpus, 20000);
+</script>
+</body>
+</html>
