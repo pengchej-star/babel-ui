@@ -193,7 +193,7 @@ button.danger { color: var(--bad); }
 <body>
 <header>
   <span class="dot" id="dot"></span>
-  <h1>Babel</h1>
+  <h1 id="clusterName">Babel</h1>
   <span class="muted mono" id="host"></span>
   <nav class="tabs" id="tabs">
     <button data-tab="jobs">作业<span class="count" id="jobsTabCount"></span></button>
@@ -379,6 +379,7 @@ const ago = (sec) => {
 };
 
 let connected = false;
+let CLUSTER = "Babel";   // display name, from BABEL_UI_NAME via /api/status
 let myNodes = new Set();
 let gpuData = [];
 let gpuFilter = null;
@@ -389,6 +390,11 @@ async function pollStatus() {
   try {
     const s = await api("/api/status");
     $("host").textContent = s.host;
+    if (s.name && s.name !== CLUSTER) {
+      CLUSTER = s.name;
+      $("clusterName").textContent = document.title = CLUSTER;
+      $("pwInput").placeholder = `${CLUSTER} 密码`;
+    }
     const was = connected;
     connected = s.connected;
     $("dot").classList.toggle("on", connected);
@@ -461,9 +467,10 @@ async function loadJobs() {
           class="ghost" data-cancel="${esc(j.id)}" title="scancel">✕</button></td>
       </tr>`).join("")}</tbody></table>`;
     }
-    // Babel has dozens of lab partitions; headline the shared ones plus any you have jobs in.
+    // Clusters can have dozens of lab partitions; headline the ones you can submit to
+    // (from /api/me) plus any you have jobs in, and fold the rest away.
     const all = Object.keys({...d.pending, ...d.running}).sort();
-    const mine = new Set(["general", "preempt", "debug", ...d.jobs.map(j => j.partition)]);
+    const mine = new Set([...(me?.partitions || []).map(p => p.name), ...d.jobs.map(j => j.partition)]);
     const fmt = p => `${esc(p)} 运行 ${d.running[p] || 0} · 排队 ${d.pending[p] || 0}`;
     const open = $("qline").querySelector("details")?.open ? "open" : "";
     $("qline").innerHTML = "集群：" + all.filter(p => mine.has(p)).map(fmt).join("　|　") +
@@ -1004,7 +1011,7 @@ $("fsBar").addEventListener("click", async (e) => {
   if (act === "delete") {
     const names = [...selected];
     const list = names.slice(0, 15).join("\n") + (names.length > 15 ? `\n…等共 ${names.length} 项` : "");
-    if (!confirm(`永久删除这 ${names.length} 项？文件夹会连同里面的内容一起删除。\nBabel 上没有回收站，删了找不回来。\n\n${list}`)) return;
+    if (!confirm(`永久删除这 ${names.length} 项？文件夹会连同里面的内容一起删除。\n${CLUSTER} 上没有回收站，删了找不回来。\n\n${list}`)) return;
     if (await fsCall({ op: "delete", paths })) { selected.clear(); toast(`已删除 ${names.length} 项`); }
   }
 });
@@ -1098,7 +1105,7 @@ async function saveEditor(force = false) {
   const r = await res.json().catch(() => ({}));
   if (res.status === 409) {
     $("editStatus").textContent = "冲突";
-    if (confirm("这个文件在你打开之后，已经在 Babel 上被改过了（可能是作业或别的程序写的）。\n\n" +
+    if (confirm(`这个文件在你打开之后，已经在 ${CLUSTER} 上被改过了（可能是作业或别的程序写的）。\n\n` +
                 "确定：用你现在的内容覆盖它\n取消：先不保存（可以关掉重新打开看最新内容）")) return saveEditor(true);
     return;
   }

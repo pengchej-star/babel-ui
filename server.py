@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Local web UI for the CMU Babel (Slurm) cluster.
+"""Local web UI for a Slurm cluster reached over ssh (built for CMU Babel).
 
 Everything goes through your own `ssh` using a shared ControlMaster socket, so
 you authenticate (password / Duo) once in the in-page terminal and the
 dashboard calls reuse that connection. No credentials are stored.
 
     python3 server.py            # then open http://127.0.0.1:8765
-    BABEL_HOST=babel PORT=8765 python3 server.py
 
-Optionally save your password from the page (stored in the macOS Keychain, never
-on disk or in env); the server then logs in on its own via SSH_ASKPASS.
+Settings are environment variables, optionally kept in a `.env` file next to
+this script (see .env.example); variables already set in the environment win.
+
+Optionally save your password from the page (stored in the system keychain,
+never on disk or in env); the server then logs in on its own via SSH_ASKPASS.
 """
 import asyncio
 import fcntl
@@ -18,6 +20,7 @@ import os
 import pty
 import re
 import shlex
+import shutil
 import signal
 import struct
 import sys
@@ -30,17 +33,48 @@ import keyring
 import keyring.errors
 from aiohttp import WSMsgType, web
 
-HOST = os.environ.get("BABEL_HOST", "babel")
-PORT = int(os.environ.get("PORT", "8765"))
-STATIC = Path(__file__).parent / "static"
-ASKPASS = Path(__file__).parent / "askpass.py"
+ROOT = Path(__file__).parent
+
+
+def load_dotenv(path: Path):
+    """Minimal .env reader: KEY=VALUE lines, # comments, optional quotes.
+    Never overrides variables that are already set."""
+    if not path.is_file():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip().removeprefix("export ").strip()
+        val = val.strip()
+        if val[:1] in "\"'" and val[:1] and val.count(val[0]) >= 2:
+            val = val[1:val.index(val[0], 1)]
+        else:
+            val = val.split(" #", 1)[0].strip()
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            os.environ.setdefault(key, val)
+
+
+load_dotenv(ROOT / ".env")
+
+# ---- settings (all optional; documented in .env.example)
+HOST = os.environ.get("BABEL_HOST") or "babel"               # ssh host alias from ~/.ssh/config
+PORT = int(os.environ.get("BABEL_UI_PORT") or os.environ.get("PORT") or 8765)
+NAME = os.environ.get("BABEL_UI_NAME") or "Babel"            # shown in the page and notifications
+PERSIST = os.environ.get("BABEL_UI_PERSIST") or "8h"         # idle lifetime of the shared ssh connection
+DUO_OPTION = os.environ.get("BABEL_UI_DUO_OPTION", "1")      # reply to Duo's "Passcode or option"; "" = don't
+PROTECT = [p.rstrip("/") for p in os.environ.get("BABEL_UI_PROTECT", "").split(":") if p.startswith("/")]
+
+STATIC = ROOT / "static"
+ASKPASS = ROOT / "askpass.py"
 KEY_SERVICE = "babel-ui"
 
 SSH_BASE = [
     "ssh",
     "-o", "ControlMaster=auto",
     "-o", f"ControlPath={Path.home()}/.ssh/babel-ui-%C",
-    "-o", "ControlPersist=8h",
+    "-o", f"ControlPersist={PERSIST}",
     "-o", "ServerAliveInterval=30",
 ]
 
@@ -128,6 +162,7 @@ async def auto_login() -> bool:
         env = dict(os.environ,
                    SSH_ASKPASS=str(ASKPASS), SSH_ASKPASS_REQUIRE="force",
                    DISPLAY=os.environ.get("DISPLAY", ":0"), BABEL_UI_ACCOUNT=HOST,
+                   BABEL_UI_DUO_OPTION=DUO_OPTION,
                    PATH=f"{Path(sys.executable).parent}:{os.environ.get('PATH', '')}")
         # stderr goes to a file: the backgrounded (-f) master inherits it, so a
         # pipe would never reach EOF.
@@ -158,7 +193,7 @@ async def status(request):
     saved = has_password()
     if not connected and saved and login["state"] not in ("failed", "running"):
         asyncio.ensure_future(auto_login())
-    return web.json_response({"connected": connected, "host": HOST, "has_password": saved,
+    return web.json_response({"connected": connected, "host": HOST, "name": NAME, "has_password": saved,
                               "login": login["state"], "login_error": login["error"]})
 
 
@@ -662,9 +697,12 @@ async def remote_home() -> str:
 
 
 async def check_removable(p: str):
-    """Never delete/move top-level dirs, your home, or a per-user root like /data/user_data/$USER."""
+    """Never delete/move top-level dirs, your home, a per-user root like /data/user_data/$USER,
+    anything listed in BABEL_UI_PROTECT, or a parent of any of those."""
     home = await remote_home()
-    if p.count("/") <= 2 or p == home or home.startswith(p + "/") or p.rsplit("/", 1)[-1] == _home["user"]:
+    guarded = [home, *PROTECT]
+    if (p.count("/") <= 2 or p.rsplit("/", 1)[-1] == _home["user"]
+            or any(p == g or g.startswith(p + "/") for g in guarded)):
         raise ValueError(f"为安全起见，不允许删除或移动 {p}")
 
 
@@ -743,11 +781,17 @@ async def fs_op(request):
 
 # ---------------------------------------------------------------- notifications
 async def mac_notify(title: str, body: str):
+    """Desktop notification: osascript on macOS, notify-send on Linux, else nothing."""
+    if shutil.which("osascript"):
+        args = ["osascript", "-e", "on run argv",
+                "-e", 'display notification (item 2 of argv) with title (item 1 of argv) sound name "Glass"',
+                "-e", "end run", title, body]
+    elif shutil.which("notify-send"):
+        args = ["notify-send", title, body]
+    else:
+        return
     proc = await asyncio.create_subprocess_exec(
-        "osascript", "-e", "on run argv",
-        "-e", 'display notification (item 2 of argv) with title (item 1 of argv) sound name "Glass"',
-        "-e", "end run", title, body,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
     await proc.wait()
 
 
@@ -769,7 +813,7 @@ async def watch_jobs(app):
         if seen is not None:
             for jid, (name, state) in now.items():
                 if state == "RUNNING" and seen.get(jid, ("", ""))[1] != "RUNNING":
-                    await mac_notify("Babel：作业开始运行", f"{name} ({jid})")
+                    await mac_notify(f"{NAME}：作业开始运行", f"{name} ({jid})")
             gone = [j for j in seen if j not in now]
             if gone:
                 _, acct, _ = await run(f"sacct -j {','.join(gone)} -X -n -P -o JobID,JobName,State,ExitCode,Elapsed")
@@ -777,7 +821,7 @@ async def watch_jobs(app):
                     f = ln.split("|")
                     if len(f) == 5 and f[0] in gone:
                         ok = f[2].startswith("COMPLETED")
-                        await mac_notify(f"Babel：作业{'完成' if ok else '结束：' + f[2].split()[0]}",
+                        await mac_notify(f"{NAME}：作业{'完成' if ok else '结束：' + f[2].split()[0]}",
                                          f"{f[1]} ({f[0]}) · 用时 {f[4]} · 退出码 {f[3]}")
         seen = now
 
@@ -788,7 +832,7 @@ async def notify_cfg(request):
         if "on" in body:
             request.app["notify"] = bool(body["on"])
         if body.get("test"):
-            await mac_notify("Babel UI", "通知已开启 ✓")
+            await mac_notify(f"{NAME} UI", "通知已开启 ✓")
     return web.json_response({"on": request.app["notify"]})
 
 
@@ -909,7 +953,7 @@ def main():
         web.get("/api/disk", disk),
         web.get("/ws/term", terminal),
     ])
-    print(f"Babel UI on http://127.0.0.1:{PORT}  (ssh host: {HOST})")
+    print(f"{NAME} UI on http://127.0.0.1:{PORT}  (ssh host: {HOST})")
     web.run_app(app, host="127.0.0.1", port=PORT, print=None)
 
 

@@ -1,0 +1,12 @@
+# local settings
+.env
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
