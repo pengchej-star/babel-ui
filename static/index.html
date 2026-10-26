@@ -803,9 +803,11 @@ $("rEstimate").onclick = async () => {
 // (HUP) deliberately does NOT cancel: refreshing the page drops the web terminal, and that must
 // not throw away a job that has waited in the queue for hours. The job stays in the jobs list;
 // click 进入 on it once it is running (a start notification pops up).
+// Just leaving HUP untrapped is not enough: bash 4+ (Babel has 5.1) still runs the EXIT trap when
+// a signal kills it, so the HUP handler has to disarm the EXIT trap itself before exiting.
 function interactiveCmd(opts) {
   return `( jid=$(sbatch --parsable --job-name=interactive ${opts.join(" ")} --wrap="sleep infinity") || exit 1; ` +
-    `trap 'scancel $jid; echo; echo "已释放作业 $jid"' EXIT; trap 'exit 130' INT TERM; ` +
+    `trap 'scancel $jid; echo; echo "已释放作业 $jid"' EXIT; trap 'exit 130' INT TERM; trap 'trap - EXIT; exit 129' HUP; ` +
     `echo "已提交占位作业 $jid，等待分配资源（Ctrl-C 取消并撤回；刷新页面不会取消，之后在「作业」页点「进入」）…"; ` +
     `while :; do s=$(squeue -h -j $jid -o %T); [ "$s" = RUNNING ] && break; ` +
     `[ -z "$s" ] && { echo "作业已结束"; exit 1; }; sleep 5; done; ` +
