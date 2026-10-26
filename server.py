@@ -25,6 +25,7 @@ import signal
 import struct
 import sys
 import tempfile
+import time
 import termios
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -176,17 +177,36 @@ def has_password() -> bool:
     return keyring.get_password(KEY_SERVICE, HOST) is not None
 
 
-# Auto-login state. After a failure we stop trying until the user saves a new
-# password or clicks retry, so a wrong password can't lock the account.
-login = {"state": "idle", "error": ""}
+# Auto-login state:
+#   idle / running / ok
+#   failed   the login was refused or a Duo push went unanswered. Stop trying until the user
+#            saves a new password or clicks retry, so a wrong password can't lock the account.
+#   offline  the host could not be reached at all, so no password was ever tested and there is
+#            nothing to lock: retry by itself every RETRY_SECS (while a page is polling status).
+login = {"state": "idle", "error": "", "retry_at": 0.0}
 _login_lock = asyncio.Lock()
+RETRY_SECS = max(5, int(os.environ.get("BABEL_UI_RETRY_SECS") or 30))
+NETWORK_ERR = re.compile(
+    r"Connection refused|Operation timed out|Connection timed out|No route to host|Network is unreachable|"
+    r"Host is down|Could not resolve hostname|Connection reset by peer|Connection closed by|"
+    r"kex_exchange_identification|Broken pipe|Network is down")
+
+
+def reset_login():
+    login.update(state="idle", error="", retry_at=0.0)
+
+
+def may_try_login() -> bool:
+    if login["state"] in ("failed", "running"):
+        return False
+    return login["state"] != "offline" or time.time() >= login["retry_at"]
 
 
 async def auto_login() -> bool:
     async with _login_lock:
         if await master_alive():
             return True
-        if login["state"] == "failed" or not has_password():
+        if not has_password() or not may_try_login():
             return False
         login.update(state="running", error="")
         env = dict(os.environ,
@@ -212,20 +232,26 @@ async def auto_login() -> bool:
                 proc.kill()
                 err = "timed out (Duo push not approved?)"
         if proc.returncode == 0 and await master_alive():
-            login.update(state="ok", error="")
+            login.update(state="ok", error="", retry_at=0.0)
             return True
-        login.update(state="failed", error=err.strip()[-300:] or f"ssh exited {proc.returncode}")
+        msg = err.strip()[-300:] or f"ssh exited {proc.returncode}"
+        if NETWORK_ERR.search(err):
+            login.update(state="offline", error=msg, retry_at=time.time() + RETRY_SECS)
+        else:
+            login.update(state="failed", error=msg)
         return False
 
 
 async def status(request):
     connected = await master_alive()
     saved = has_password()
-    if not connected and saved and login["state"] not in ("failed", "running"):
+    if not connected and saved and may_try_login():
         asyncio.ensure_future(auto_login())
     return web.json_response({"connected": connected, "host": HOST, "name": NAME, "has_password": saved,
                               "max_terms": MAX_TERMS,
-                              "login": login["state"], "login_error": login["error"]})
+                              "login": login["state"], "login_error": login["error"],
+                              "retry_in": max(0, round(login["retry_at"] - time.time()))
+                              if login["state"] == "offline" else 0})
 
 
 async def set_password(request):
@@ -233,7 +259,7 @@ async def set_password(request):
     if not pw:
         return fail("empty password", 400)
     keyring.set_password(KEY_SERVICE, HOST, pw)
-    login.update(state="idle", error="")
+    reset_login()
     return web.json_response({"ok": True})
 
 
@@ -242,12 +268,12 @@ async def delete_password(request):
         keyring.delete_password(KEY_SERVICE, HOST)
     except keyring.errors.PasswordDeleteError:
         pass
-    login.update(state="idle", error="")
+    reset_login()
     return web.json_response({"ok": True})
 
 
 async def retry_login(request):
-    login.update(state="idle", error="")
+    reset_login()
     return web.json_response({"ok": await auto_login(), **login})
 
 

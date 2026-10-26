@@ -429,6 +429,7 @@ async function pollStatus() {
     if (s.max_terms && s.max_terms !== MAX_TERMS) { MAX_TERMS = s.max_terms; renderTermTabs(); }
     $("connHint").textContent = connected ? "" :
       s.login === "running" ? "自动登录中…（有 Duo 的话请在手机上确认）" :
+      s.login === "offline" ? `连不上 ${CLUSTER}（${shortErr(s.login_error)}），${s.retry_in} 秒后自动重试；点右上角 🔑 可以立即重试` :
       s.login === "failed" ? "自动登录失败，点右上角 🔑 查看" :
       s.has_password ? "正在连接…" : "未连接：在「终端」页登录，或点右上角 🔑 保存密码";
     renderPw();
@@ -439,11 +440,14 @@ async function pollStatus() {
 
 // ---------------------------------------------------------- saved password
 let lastStatus = {};
+// "ssh: connect to host login.babel.cs.cmu.edu port 22: Connection refused" -> "Connection refused"
+const shortErr = (e) => String(e || "").trim().split("\n").pop().replace(/^ssh: connect to host \S+ port \d+: /, "");
 function renderPw() {
   const s = lastStatus;
   $("pwState").textContent = !s.has_password ? "未保存" :
-    s.login === "failed" ? "已保存，但上次自动登录失败" : "已保存";
-  $("pwErr").textContent = s.login === "failed" ? s.login_error : "";
+    s.login === "failed" ? "已保存，但上次自动登录失败" :
+    s.login === "offline" ? "已保存，但现在连不上集群，会自动重试（没有试过密码）" : "已保存";
+  $("pwErr").textContent = s.login === "failed" || s.login === "offline" ? s.login_error : "";
 }
 $("pwBtn").onclick = () => { renderPw(); $("pwDialog").showModal(); $("pwInput").focus(); };
 $("pwClose").onclick = () => $("pwDialog").close();
