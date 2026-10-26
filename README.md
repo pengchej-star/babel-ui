@@ -44,6 +44,16 @@ babel-ui-stop --all  # 关闭，并断开到集群的共享 ssh 连接
 
 服务在后台运行，关掉终端窗口也不会停；日志在 `~/Library/Logs/babel-ui.log`。
 
+### macOS 应用（可选）
+
+不想开浏览器标签的话，[macos/](macos/) 里有一个原生小应用：菜单栏图标 + 独立窗口，没在运行时会自动启动服务，退出时只关掉它自己启动的那个。需要 Xcode：
+
+```bash
+cd macos && ./build.sh install    # 装到 ~/Applications/Babel UI.app
+```
+
+详见 [macos/README.md](macos/README.md)。
+
 ### 第一次登录
 
 打开页面后会自动跳到「终端」页，里面是 `ssh babel` 的密码 / Duo 提示。登录一次后左上角变绿，其它页开始自动刷新。
