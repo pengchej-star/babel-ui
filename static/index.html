@@ -153,6 +153,8 @@ tr.click { cursor: pointer; }
 #jLogPath { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 200px; }
 .badge.COMPLETED { color: var(--ok); }
 .badge.OUT_OF_MEMORY, .badge.NODE_FAIL, .badge.PREEMPTED { color: var(--bad); }
+tr.winding td { opacity: .55; }
+tr.winding .badge { font-style: italic; }
 #logText { height: 50vh; max-height: none; background: var(--term-bg); color: #d6dbe1; font-size: 12px; }
 
 /* request form */
@@ -172,6 +174,12 @@ tr.click { cursor: pointer; }
 .fsbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 12px;
   border-bottom: 1px solid var(--line); background: var(--bg); font-size: 12px; }
 .fsbar:empty { display: none; }
+.nodebar { padding: 6px 12px; font-size: 12px; border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel)); display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.nodebar[hidden] { display: none; }
+.nodebar .quick { display: flex; gap: 4px; }
+#fsWhere { max-width: 46%; }
+.files-node .pathbar input { border-color: var(--accent); }
 .fsbar .grp { display: flex; gap: 4px; align-items: center; }
 .fsbar .grp + .grp { margin-left: 8px; padding-left: 10px; border-left: 1px solid var(--line); }
 button.danger { color: var(--bad); }
@@ -277,19 +285,22 @@ button.danger { color: var(--bad); }
 
   <section class="card" id="files">
     <div class="head">
-      <h2>文件</h2><span class="spacer"></span>
+      <h2>文件</h2>
+      <select id="fsWhere" title="看哪台机器上的文件：登录节点，或者你正在运行的作业所在的计算节点"></select>
+      <span class="spacer"></span>
       <button class="ghost" id="newDir">新建文件夹</button>
       <button class="ghost" id="newFile">新建文件</button>
       <button class="ghost" id="upload" title="上传到当前目录（也可以直接把文件拖进来）">上传</button>
       <input type="file" id="uploadInput" multiple hidden>
       <button class="ghost" id="duBtn" title="统计当前目录下每项占用">分析占用</button>
-      <button class="ghost" id="cdTerm" title="在终端里 cd 到这里">终端 cd 到此</button>
+      <button class="ghost" id="cdTerm" title="在终端里 cd 到这里（看计算节点时会先进入那个作业）">终端 cd 到此</button>
     </div>
     <div class="pathbar">
       <button id="upBtn" title="上一级">↑</button>
       <button id="homeBtn" title="主目录">~</button>
       <input id="pathInput" class="mono" spellcheck="false">
     </div>
+    <div class="nodebar" id="nodeBar" hidden></div>
     <div class="fsbar" id="fsBar"></div>
     <div class="body" id="fileBody"><div class="empty">等待连接…</div></div>
     <div class="disk mono" id="disk"></div>
@@ -323,6 +334,7 @@ button.danger { color: var(--bad); }
 
 <dialog id="jobDlg">
   <div class="head"><b id="jName"></b><span class="badge" id="jState"></span><span style="flex:1"></span>
+    <button id="jFiles" title="在文件页浏览这个作业所在计算节点的文件">节点文件</button>
     <button id="jShell" title="srun --overlap 进入作业所在节点的 shell，不影响作业本身">进入节点</button>
     <button id="jCancel" class="ghost">取消作业</button><button id="jClose">关闭</button></div>
   <div class="kv mono small" id="jKv"></div>
@@ -381,6 +393,7 @@ const ago = (sec) => {
 let connected = false;
 let CLUSTER = "Babel";   // display name, from BABEL_UI_NAME via /api/status
 let myNodes = new Set();
+const ACTIVE = new Set(["RUNNING", "PENDING", "SUSPENDED", "CONFIGURING", "REQUEUED", "RESIZING"]);
 let gpuData = [];
 let gpuFilter = null;
 let cwd = "";
@@ -446,25 +459,36 @@ async function loadJobs() {
     const d = await api("/api/queue");
     myNodes = new Set();
     d.jobs.filter(j => j.state === "RUNNING").forEach(j => expandNodes(j.reason).forEach(n => myNodes.add(n)));
-    $("jobCount").textContent = d.jobs.length ? `${d.jobs.length} 个` : "";
-    $("jobsTabCount").textContent = d.jobs.length || "";
+    // squeue keeps finished jobs for MinJobAge (5 min on Babel), and a job whose node is slow to
+    // confirm cleanup sits in COMPLETING; neither is "yours to manage", so don't count them.
+    runningJobs = d.jobs.filter(j => j.state === "RUNNING")
+      .map(j => ({ id: j.id, node: j.reason.split(",")[0], name: j.name }));
+    renderWhere();
+    const live = d.jobs.filter(j => ACTIVE.has(j.state)).length;
+    const winding = d.jobs.length - live;
+    $("jobCount").textContent = d.jobs.length
+      ? `${live} 个` + (winding ? `（另有 ${winding} 个正在收尾）` : "") : "";
+    $("jobsTabCount").textContent = live || "";
     if (!d.jobs.length) {
       $("jobsBody").innerHTML = `<div class="empty">没有排队或运行中的作业</div>`;
     } else {
       $("jobsBody").innerHTML = `<table><thead><tr>
         <th>ID</th><th>名称</th><th>分区</th><th>状态</th><th>已运行 / 上限</th><th>资源</th><th>节点 / 原因</th><th>预计开始</th><th></th>
-      </tr></thead><tbody>${d.jobs.map(j => `<tr class="click" data-job="${esc(j.id)}">
+      </tr></thead><tbody>${[...d.jobs.filter(j => ACTIVE.has(j.state)), ...d.jobs.filter(j => !ACTIVE.has(j.state))]
+        .map(j => `<tr class="click ${ACTIVE.has(j.state) ? "" : "winding"}" data-job="${esc(j.id)}">
         <td class="mono">${esc(j.id)}</td>
         <td title="${esc(j.name)}">${esc(j.name.length > 28 ? j.name.slice(0, 27) + "…" : j.name)}</td>
         <td>${esc(j.partition)}</td>
-        <td><span class="badge ${esc(j.state)}">${esc(j.state)}</span></td>
+        <td><span class="badge ${esc(j.state)}" ${j.state === "COMPLETING"
+          ? `title="作业已经结束，Slurm 正在等节点确认进程都退出了。通常几秒；久了说明节点上有进程杀不掉，不占你的额度。"` : ""}>${
+          j.state === "COMPLETING" ? "收尾中" : esc(j.state)}</span></td>
         <td class="mono">${esc(j.elapsed)} / ${esc(j.limit)}</td>
         <td class="mono">${esc(j.cpus)}c ${esc(j.gres === "N/A" ? "" : j.gres.replace(/^gres[:/]/, ""))}</td>
         <td class="mono">${esc(j.reason)}</td>
         <td class="mono muted">${j.state === "PENDING" && j.start !== "N/A" ? esc(j.start.replace("T", " ")) : ""}</td>
         <td style="white-space:nowrap">${j.state === "RUNNING"
-          ? `<button class="ghost small" data-enter="${esc(j.id)}" title="进入作业所在节点的 shell">进入</button>` : ""}<button
-          class="ghost" data-cancel="${esc(j.id)}" title="scancel">✕</button></td>
+          ? `<button class="ghost small" data-files="${esc(j.id)}" title="在文件页浏览这个作业所在计算节点的文件">文件</button><button class="ghost small" data-enter="${esc(j.id)}" title="进入作业所在节点的 shell">进入</button>` : ""}${
+          ACTIVE.has(j.state) ? `<button class="ghost" data-cancel="${esc(j.id)}" title="scancel">✕</button>` : ""}</td>
       </tr>`).join("")}</tbody></table>`;
     }
     // Clusters can have dozens of lab partitions; headline the ones you can submit to
@@ -498,6 +522,7 @@ function expandNodes(s) {
 
 $("jobsBody").addEventListener("click", async (e) => {
   if (e.target.dataset.enter) return enterJob(e.target.dataset.enter);
+  if (e.target.dataset.files) return browseNode(e.target.dataset.files);
   const id = e.target.dataset.cancel;
   if (!id) {
     const row = e.target.closest("tr[data-job]");
@@ -567,7 +592,7 @@ async function openJob(id) {
   $("jState").textContent = state;
   $("jState").className = "badge " + state;
   $("jCancel").hidden = !/RUNNING|PENDING/.test(state);
-  $("jShell").hidden = state !== "RUNNING";
+  $("jShell").hidden = $("jFiles").hidden = state !== "RUNNING";
   const kv = [["分区", job.partition], ["节点", job.nodes], ["资源", tresShort(job.tres) || job.tres],
               ["运行", `${job.runtime} / ${job.limit}`], ["目录", job.workdir], ["命令", job.command]];
   if (job.reason && job.reason !== "None") kv.push(["原因", job.reason]);
@@ -598,6 +623,15 @@ async function pollLog() {
     const pre = $("logText");
     if (!r.exists) {
       pre.textContent = jd.job.state.startsWith("PENDING") ? "作业还没开始，日志文件还没创建" : "日志文件不存在（可能被删了）";
+      return;
+    }
+    if (r.size === 0 && jd.next <= 0) {
+      // Say why it's blank instead of showing an empty box that looks broken.
+      const holder = /sleep infinity/.test(jd.job.command || "") || jd.job.name === "interactive" || jd.job.command === "(null)";
+      pre.textContent = "日志文件存在，但目前是空的。\n\n" + (holder
+        ? "这是「开交互式会话」留的占位作业，它只跑 sleep infinity，本身不会输出任何东西。\n你在进入节点后的 shell 里运行的程序，输出会直接显示在那个终端里，不会写进这个文件。"
+        : "作业还没往 stdout 写内容。Python 在输出被重定向到文件时会缓冲，可以用 python -u 或 print(..., flush=True) 让它及时写出来。");
+      jd.next = 0;
       return;
     }
     if (jd.next < 0 || r.start !== jd.next) {
@@ -642,6 +676,7 @@ function enterJob(id) {
   if (pasteToTerm(`srun --jobid=${id} --overlap --pty bash -l\r`)) $("jobDlg").close();
 }
 $("jShell").onclick = () => { if (jd) enterJob(jd.job.id); };
+$("jFiles").onclick = () => { if (jd) { const id = jd.job.id; $("jobDlg").close(); browseNode(id); } };
 $("jLogSel").onchange = switchLog;
 $("jClose").onclick = () => $("jobDlg").close();
 $("jobDlg").addEventListener("close", () => { if (jd) clearInterval(jd.timer); jd = null; });
@@ -881,12 +916,63 @@ $("partSel").addEventListener("change", renderGpus);
 
 // ---------------------------------------------------------- files
 let selected = new Set();   // names in cwd
-let clip = null;            // { mode: "copy" | "cut", paths: [abs], from: dir }
+let clip = null;            // { mode: "copy" | "cut", paths: [abs], from: dir, job: "" | jobId }
+
+// Where the file tab looks: "" = login node, otherwise a running job id (that job's compute node).
+let fsJob = "";
+let runningJobs = [];        // [{ id, node, name }] from the jobs list
+const cwdAt = {};            // last directory per location
+const jq = (job = fsJob) => (job ? `&job=${encodeURIComponent(job)}` : "");
+const where = () => runningJobs.find(j => j.id === fsJob);
+
+function renderWhere() {
+  const sel = $("fsWhere");
+  if (fsJob && !where()) {            // the job finished while we were looking at its node
+    const gone = fsJob;
+    fsJob = "";
+    toast(`作业 ${gone} 已经结束，文件页已切回登录节点`, 6000);
+    loadDir("");
+  }
+  sel.innerHTML = `<option value="">登录节点</option>` + runningJobs.map(j =>
+    `<option value="${esc(j.id)}">计算节点 ${esc(j.node)} · 作业 ${esc(j.id)}</option>`).join("");
+  sel.value = fsJob;
+  sel.hidden = !runningJobs.length && !fsJob;
+  const j = where();
+  $("files").classList.toggle("files-node", !!j);
+  const bar = $("nodeBar");
+  bar.hidden = !j;
+  if (j) {
+    bar.innerHTML = `<b>正在看计算节点 ${esc(j.node)}</b>
+      <span class="muted">/tmp、/scratch、/dev/shm 是这台节点自己的磁盘，登录节点和别的节点看不到，作业结束后里面的东西不保证保留；家目录和 /data 下的是和登录节点同一套文件。</span>
+      <span class="quick"><button class="ghost small" data-go="">~</button>
+        <button class="ghost small" data-go="/tmp">/tmp</button>
+        <button class="ghost small" data-go="/scratch">/scratch</button>
+        <button class="ghost small" data-go="/dev/shm">/dev/shm</button></span>`;
+  }
+}
+
+$("fsWhere").onchange = () => switchWhere($("fsWhere").value);
+$("nodeBar").addEventListener("click", (e) => { if (e.target.dataset.go !== undefined) loadDir(e.target.dataset.go); });
+
+function switchWhere(job) {
+  cwdAt[fsJob] = cwd;
+  fsJob = job;
+  selected.clear();
+  cwd = "";
+  renderWhere();
+  loadDir(cwdAt[job] ?? "");
+}
+
+// Jump to a running job's node from the jobs list.
+function browseNode(job) {
+  showTab("files");
+  switchWhere(job);
+}
 
 async function loadDir(path) {
   if (!connected) return;
   try {
-    const d = await api("/api/ls?path=" + encodeURIComponent(path ?? cwd));
+    const d = await api("/api/ls?path=" + encodeURIComponent(path ?? cwd) + jq());
     if (d.cwd !== cwd) selected.clear();
     cwd = d.cwd;
     $("pathInput").value = cwd;
@@ -903,7 +989,7 @@ async function loadDir(path) {
 
 function renderFiles(entries, du) {
   const max = du ? Math.max(1, ...Object.values(du)) : 0;
-  const cut = new Set(clip?.mode === "cut" ? clip.paths : []);
+  const cut = new Set(clip?.mode === "cut" && clip.job === fsJob ? clip.paths : []);
   $("fileBody").innerHTML = entries.map(f => {
     const icon = f.type === "d" ? "📁" : f.type === "l" ? "🔗" : "📄";
     const sizeB = du && du[f.name] != null ? du[f.name] * 1024 : (f.type === "d" ? null : f.size);
@@ -934,11 +1020,11 @@ $("fileBody").addEventListener("click", async (e) => {
     return renderFsBar();
   }
   if (e.target.dataset.dl) {
-    location.href = "/api/download?path=" + encodeURIComponent(p);
+    location.href = "/api/download?path=" + encodeURIComponent(p) + jq();
     return;
   }
   if (row.dataset.type === "d" || row.dataset.type === "l") {
-    try { await api("/api/ls?path=" + encodeURIComponent(p)); return loadDir(p); }
+    try { await api("/api/ls?path=" + encodeURIComponent(p) + jq()); return loadDir(p); }
     catch { if (row.dataset.type === "d") return; }
   }
   openEditor(p);
@@ -947,7 +1033,8 @@ $("fileBody").addEventListener("click", async (e) => {
 // ---------------------------------------------------------- file operations
 async function fsCall(body) {
   try {
-    const r = await api("/api/fs", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
+    const r = await api("/api/fs", { method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ job: fsJob, ...body }) });
     if (r.skipped?.length) toast(`目标位置已有同名项，跳过：${r.skipped.join("、")}`, 6000);
     return r;
   } catch (e) {
@@ -968,7 +1055,7 @@ function renderFsBar() {
     <button class="ghost danger" data-fs="delete">删除</button>
     <button class="ghost" data-fs="none">取消选择</button></span>`);
   else parts.push(`<span class="grp"><button class="ghost" data-fs="all">全选</button></span>`);
-  if (clip) parts.push(`<span class="grp">剪贴板：${clip.paths.length} 项（${clip.mode === "cut" ? "剪切" : "复制"}）
+  if (clip) parts.push(`<span class="grp">剪贴板：${clip.paths.length} 项（${clip.mode === "cut" ? "剪切" : "复制"}${clip.job === fsJob ? "" : clip.job ? "，来自计算节点" : "，来自登录节点"}）
     <button data-fs="paste">粘贴到这里</button>
     <button class="ghost" data-fs="clear">清空</button></span>`);
   $("fsBar").innerHTML = (n || clip || $("fileBody").querySelector(".frow")) ? parts.join("") : "";
@@ -984,7 +1071,7 @@ $("fsBar").addEventListener("click", async (e) => {
   }
   if (act === "none") { selected.clear(); return loadDir(cwd); }
   if (act === "copy" || act === "cut") {
-    clip = { mode: act, paths, from: cwd };
+    clip = { mode: act, paths, from: cwd, job: fsJob };
     selected.clear();
     toast(`已${act === "cut" ? "剪切" : "复制"} ${paths.length} 项，去目标目录点「粘贴到这里」`);
     return loadDir(cwd);
@@ -992,8 +1079,12 @@ $("fsBar").addEventListener("click", async (e) => {
   if (act === "clear") { clip = null; return loadDir(cwd); }
   if (act === "paste") {
     const c = clip;
-    if (c.mode === "cut" && c.from === cwd) return toast("已经在这个目录里了");
-    const r = await fsCall({ op: c.mode === "cut" ? "move" : "copy", paths: c.paths, dest: cwd });
+    if (c.mode === "cut" && c.from === cwd && c.job === fsJob) return toast("已经在这个目录里了");
+    if (c.job && fsJob && c.job !== fsJob)
+      return toast("两台不同的计算节点之间不能直接复制，可以先复制到家目录，再从家目录复制过去", 7000);
+    // Between the login node and a compute node the work runs on the node side; that works
+    // when both paths are on shared storage (home, /data, ...) — node-local /tmp is not shared.
+    const r = await fsCall({ op: c.mode === "cut" ? "move" : "copy", paths: c.paths, dest: cwd, job: c.job || fsJob });
     if (r) {
       if (c.mode === "cut") clip = null;
       const done = c.paths.length - (r.skipped?.length || 0);
@@ -1067,7 +1158,8 @@ function markDirty() {
 async function openEditor(path) {
   if ($("editDlg").open && !(await closeEditor())) return;
   ed = null;
-  $("editPath").textContent = path;
+  const job = fsJob;   // the file lives on whichever machine the file tab was showing when it was opened
+  $("editPath").textContent = (job ? `[节点 ${where()?.node ?? job}] ` : "") + path;
   $("editStatus").textContent = "读取中…";
   $("editDirty").hidden = true;
   $("editBox").hidden = true;
@@ -1075,13 +1167,13 @@ async function openEditor(path) {
   $("editSave").hidden = true;
   $("editDlg").showModal();
   let r;
-  try { r = await api("/api/read?path=" + encodeURIComponent(path)); }
+  try { r = await api("/api/read?path=" + encodeURIComponent(path) + jq(job)); }
   catch (e) { $("editStatus").textContent = ""; $("editMsg").hidden = false; $("editMsg").textContent = e.message; return; }
   $("editStatus").textContent = human(r.size);
   if (!r.editable) {
     $("editMsg").hidden = false;
     $("editMsg").innerHTML = `${esc(r.reason)}，不能在这里编辑。<br><br>
-      <button onclick="location.href='/api/download?path=' + encodeURIComponent(${esc(JSON.stringify(path))})">下载这个文件</button>`;
+      <button onclick="location.href='/api/download?path=' + encodeURIComponent(${esc(JSON.stringify(path))}) + ${esc(JSON.stringify(jq(job)))}">下载这个文件</button>`;
     return;
   }
   $("editBox").hidden = false;
@@ -1091,7 +1183,7 @@ async function openEditor(path) {
   c.setOption("mode", modeFor(path, r.text));
   c.setValue(r.text);
   c.clearHistory();
-  ed = { path, version: r.version, clean: c.changeGeneration() };
+  ed = { path, job, version: r.version, clean: c.changeGeneration() };
   markDirty();
   requestAnimationFrame(() => { c.refresh(); c.focus(); });
 }
@@ -1101,7 +1193,7 @@ async function saveEditor(force = false) {
   const gen = cm.changeGeneration();
   $("editStatus").textContent = "保存中…";
   const res = await fetch("/api/write", { method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ path: ed.path, text: cm.getValue(), version: ed.version, force }) });
+    body: JSON.stringify({ path: ed.path, job: ed.job, text: cm.getValue(), version: ed.version, force }) });
   const r = await res.json().catch(() => ({}));
   if (res.status === 409) {
     $("editStatus").textContent = "冲突";
@@ -1117,7 +1209,7 @@ async function saveEditor(force = false) {
   ed.clean = gen;
   markDirty();
   $("editStatus").textContent = "已保存 " + new Date().toLocaleTimeString();
-  if (parentOf(ed.path) === cwd) loadDir(cwd);
+  if (parentOf(ed.path) === cwd && ed.job === fsJob) loadDir(cwd);
 }
 const parentOf = (p) => p.replace(/\/[^/]+$/, "") || "/";
 
@@ -1140,7 +1232,7 @@ $("duBtn").onclick = async () => {
   const dir = cwd;
   btn.disabled = true; btn.textContent = "统计中…";
   try {
-    const d = await api("/api/du?path=" + encodeURIComponent(dir));
+    const d = await api("/api/du?path=" + encodeURIComponent(dir) + jq());
     if (dir !== cwd) return;  // user navigated away meanwhile
     const du = {};
     for (const r of d.rows) {
@@ -1157,10 +1249,13 @@ $("duBtn").onclick = async () => {
 };
 
 $("cdTerm").onclick = () => {
-  if (ws && ws.readyState === 1) {
-    ws.send(JSON.stringify({ t: "i", d: `cd '${cwd.replace(/'/g, "'\\''")}'\r` }));
-    showTab("term");
-  }
+  if (!(ws && ws.readyState === 1)) return;
+  // On a compute node, step into the job there (srun --overlap) and land in this directory.
+  const cmd = fsJob
+    ? `srun --jobid=${fsJob} --overlap --pty bash -lc ${shq(`cd ${shq(cwd)} && exec bash -l`)}\r`
+    : `cd ${shq(cwd)}\r`;
+  ws.send(JSON.stringify({ t: "i", d: cmd }));
+  showTab("term");
 };
 
 function uploadFiles(files) {
@@ -1171,7 +1266,7 @@ function uploadFiles(files) {
   for (const f of files) { fd.append("f", f, f.name); total += f.size; }
   const t = toast(`上传 ${files.length} 个文件到 ${dir}…`, 1e9);
   const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/upload?dir=" + encodeURIComponent(dir));
+  xhr.open("POST", "/api/upload?dir=" + encodeURIComponent(dir) + jq());
   xhr.upload.onprogress = (e) => {
     if (e.lengthComputable) t.textContent = `上传中 ${Math.round(e.loaded / e.total * 100)}%（${human(e.loaded)} / ${human(total)}）`;
   };
@@ -1199,7 +1294,7 @@ $("files").addEventListener("drop", (e) => {
 
 async function loadDisk() {
   if (!connected) return;
-  try { $("disk").textContent = (await api("/api/disk")).text.trim(); } catch {}
+  try { $("disk").textContent = (await api("/api/disk?" + jq().slice(1))).text.trim(); } catch {}
 }
 
 // ---------------------------------------------------------- terminal

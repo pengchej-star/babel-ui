@@ -84,23 +84,50 @@ SSH_BASE = [
 _slots = asyncio.Semaphore(3)
 
 
-async def run(cmd: str, timeout: float = 20, raw: bool = False):
+def job_arg(v) -> str | None:
+    """Optional job id from a request; a job means "run this on that job's compute node"."""
+    if v in (None, "", "login"):
+        return None
+    if not re.fullmatch(r"\d+", str(v)):
+        raise ValueError("bad job id")
+    return str(v)
+
+
+def on_node(cmd: str, job: str | None) -> str:
+    """Wrap a shell command so it runs inside a running job's allocation (on its first node).
+    srun --overlap shares the job's resources instead of asking for new ones, so it also works
+    on partitions that only allow sbatch; unlike ssh-ing to the node it needs no keys."""
+    if not job:
+        return cmd
+    return f"srun --jobid={job} --overlap -N1 -n1 --quiet bash -c {shlex.quote(cmd)}"
+
+
+def node_error(err: str, job: str | None) -> str:
+    if job and re.search(r"Invalid job id|job has expired|Unable to create step|not in a running state|"
+                         r"Requested nodes are busy|Job.*state", err):
+        return f"作业 {job} 已经结束，或者还没开始运行，进不了它的计算节点"
+    return err
+
+
+async def run(cmd: str, timeout: float = 20, raw: bool = False, job: str | None = None):
     """Run a remote command over the shared connection; never prompts.
 
     Returns (code, stdout, stderr); stdout stays bytes when raw=True.
+    With job=<id> it runs on that running job's compute node instead of the login node.
     """
+    cmd = on_node(cmd, job)
     async with _slots:
         for attempt in range(3):
             code, out, err = await _run_once(cmd, timeout)
             if "Session open refused" not in err:
                 break
             await asyncio.sleep(1 + attempt)
-        return code, (out if raw else out.decode(errors="replace")), err
+        return code, (out if raw else out.decode(errors="replace")), node_error(err, job)
 
 
-def ssh_exec(cmd: str, **kw):
+def ssh_exec(cmd: str, job: str | None = None, **kw):
     return asyncio.create_subprocess_exec(
-        *SSH_BASE, "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", HOST, cmd, **kw)
+        *SSH_BASE, "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", HOST, on_node(cmd, job), **kw)
 
 
 async def _run_once(cmd: str, timeout: float) -> tuple[int, bytes, str]:
@@ -316,15 +343,26 @@ async def gpus(request):
 
 
 # ---------------------------------------------------------------- files
+def req_job(request, body=None):
+    """The `job` parameter of a request (query string, or JSON body for POSTs)."""
+    return job_arg(request.query.get("job") if body is None else body.get("job"))
+
+
 async def ls(request):
     path = request.query.get("path", "")
+    try:
+        job = req_job(request)
+    except ValueError as e:
+        return fail(str(e), 400)
     target = shlex.quote(path) if path else '"$HOME"'
+    # Only a failing `cd` is an error. find exits non-zero when an entry vanishes or is unreadable
+    # mid-listing, which is routine in busy shared dirs like /tmp, so keep what it did list.
     code, out, err = await run(
-        f'cd {target} 2>&1 && pwd && '
-        r"find . -maxdepth 1 -mindepth 1 -printf '%y|%s|%T@|%m|%u|%f\n'"
+        f'cd {target} 2>&1 || exit 2; pwd; '
+        r"find . -maxdepth 1 -mindepth 1 -printf '%y|%s|%T@|%m|%u|%f\n' 2>/dev/null; true", job=job, timeout=40
     )
     if code != 0:
-        return fail(out or err, 400)
+        return fail(err or out, 400)
     lines = out.splitlines()
     cwd, entries = lines[0], []
     for ln in lines[1:]:
@@ -340,8 +378,12 @@ async def du(request):
     path = request.query.get("path", "")
     if not path:
         return fail("path required", 400)
+    try:
+        job = req_job(request)
+    except ValueError as e:
+        return fail(str(e), 400)
     code, out, err = await run(
-        f"timeout 110 du -k -d1 -x {shlex.quote(path)} 2>/dev/null", timeout=120)
+        f"timeout 110 du -k -d1 -x {shlex.quote(path)} 2>/dev/null", timeout=120, job=job)
     rows = []
     for ln in out.splitlines():
         size, _, p = ln.partition("\t")
@@ -354,13 +396,24 @@ async def head(request):
     path = request.query.get("path", "")
     if not path:
         return fail("path required", 400)
-    code, out, err = await run(f"head -c 30000 -- {shlex.quote(path)}")
+    try:
+        job = req_job(request)
+    except ValueError as e:
+        return fail(str(e), 400)
+    code, out, err = await run(f"head -c 30000 -- {shlex.quote(path)}", job=job)
     return web.json_response({"text": out, "error": err.strip() if code else ""})
 
 
 async def disk(request):
     # quota can hang on NFS; the remote `timeout` makes sure it dies on Babel too
     # (killing our local ssh client doesn't stop the remote process).
+    try:
+        job = req_job(request)
+    except ValueError as e:
+        return fail(str(e), 400)
+    if job:  # on a compute node what matters is the node-local disk and RAM disk
+        code, out, err = await run("timeout 10 df -h /tmp /dev/shm | awk 'NR>1'", job=job)
+        return web.json_response({"text": out if code == 0 else err})
     code, out, err = await run('timeout 10 df -h "$HOME" | tail -1; echo "@@"; '
                                'timeout 10 quota -s 2>/dev/null | tail -n +3')
     return web.json_response({"text": out.replace("@@\n", "\n")})
@@ -545,11 +598,15 @@ async def download(request):
     path = request.query.get("path", "")
     if not path.startswith("/"):
         return fail("absolute path required", 400)
+    try:
+        job = req_job(request)
+    except ValueError as e:
+        return fail(str(e), 400)
     q = shlex.quote(path)
-    code, out, _ = await run(f"test -d {q} && echo d || (test -r {q} && echo f || echo x)")
+    code, out, err = await run(f"test -d {q} && echo d || (test -r {q} && echo f || echo x)", job=job)
     kind = out.strip()
-    if kind == "x":
-        return fail("not readable", 404)
+    if code != 0 or kind not in ("d", "f"):
+        return fail(err if code != 0 else "not readable", 404)
     name = path.rstrip("/").rsplit("/", 1)[-1] or "root"
     if kind == "d":
         parent = path.rstrip("/").rsplit("/", 1)[0] or "/"
@@ -560,7 +617,7 @@ async def download(request):
         "Content-Type": "application/octet-stream",
         "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
     await resp.prepare(request)
-    proc = await ssh_exec(cmd, stdin=asyncio.subprocess.DEVNULL,
+    proc = await ssh_exec(cmd, job=job, stdin=asyncio.subprocess.DEVNULL,
                           stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     try:
         while chunk := await proc.stdout.read(1 << 16):
@@ -578,6 +635,10 @@ async def upload(request):
     d = request.query.get("dir", "")
     if not d.startswith("/"):
         return fail("absolute dir required", 400)
+    try:
+        job = req_job(request)
+    except ValueError as e:
+        return fail(str(e), 400)
     results = []
     reader = await request.multipart()
     while part := await reader.next():
@@ -585,7 +646,7 @@ async def upload(request):
         if not name or name in (".", ".."):
             continue
         target = d.rstrip("/") + "/" + name
-        proc = await ssh_exec(f"set -C; cat > {shlex.quote(target)}",
+        proc = await ssh_exec(f"set -C; cat > {shlex.quote(target)}", job=job,
                               stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL,
                               stderr=asyncio.subprocess.PIPE)
         size = 0
@@ -600,7 +661,7 @@ async def upload(request):
         err = (await proc.stderr.read()).decode(errors="replace").strip()
         await proc.wait()
         results.append({"name": name, "size": size, "ok": proc.returncode == 0,
-                        "error": "同名文件已存在" if "exist" in err else err})
+                        "error": "同名文件已存在" if "exist" in err else node_error(err, job)})
     return web.json_response({"results": results})
 
 
@@ -626,11 +687,12 @@ async def read_file(request):
     """Text content for the editor, plus a version stamp for conflict checks."""
     try:
         path = check_path(request.query.get("path", ""))
+        job = req_job(request)
     except ValueError as e:
         return fail(str(e), 400)
     code, out, err = await run(
         f"f={shlex.quote(path)}; stat -L -c '%y|%s|%F' -- \"$f\" || exit 4; "
-        f"[ -d \"$f\" ] || head -c {EDIT_MAX + 1} -- \"$f\"", raw=True)
+        f"[ -d \"$f\" ] || head -c {EDIT_MAX + 1} -- \"$f\"", raw=True, job=job)
     if code != 0:
         return fail(err or "读取失败", 404)
     meta, _, data = out.partition(b"\n")
@@ -655,6 +717,7 @@ async def write_file(request):
     body = await request.json()
     try:
         path = check_path(body.get("path"))
+        job = req_job(request, body)
     except ValueError as e:
         return fail(str(e), 400)
     data = body.get("text", "").encode("utf-8")
@@ -669,7 +732,7 @@ async def write_file(request):
         "tmp=\"$t.babel-ui.$$\"; cat > \"$tmp\" || { rm -f \"$tmp\"; exit 5; }; "
         "chmod --reference=\"$t\" \"$tmp\" 2>/dev/null; "
         "mv -f -- \"$tmp\" \"$t\" && stat -c '%y|%s' -- \"$t\"")
-    proc = await ssh_exec(script, stdin=asyncio.subprocess.PIPE,
+    proc = await ssh_exec(script, job=job, stdin=asyncio.subprocess.PIPE,
                           stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         out, err = await asyncio.wait_for(proc.communicate(data), 60)
@@ -680,7 +743,7 @@ async def write_file(request):
     if proc.returncode == 3:
         return web.json_response({"ok": False, "conflict": True}, status=409)
     if proc.returncode != 0:
-        return fail(err.decode(errors="replace") or f"保存失败（{proc.returncode}）")
+        return fail(node_error(err.decode(errors="replace"), job) or f"保存失败（{proc.returncode}）")
     return web.json_response({"ok": True, "version": out})
 
 
@@ -696,12 +759,17 @@ async def remote_home() -> str:
     return _home["home"]
 
 
-async def check_removable(p: str):
+NODE_SCRATCH = ("/tmp", "/scratch", "/dev/shm")   # node-local disks: fair game on a compute node
+
+
+async def check_removable(p: str, job: str | None = None):
     """Never delete/move top-level dirs, your home, a per-user root like /data/user_data/$USER,
-    anything listed in BABEL_UI_PROTECT, or a parent of any of those."""
+    anything listed in BABEL_UI_PROTECT, or a parent of any of those.
+    On a compute node, items inside /tmp, /scratch and /dev/shm are allowed (not those dirs themselves)."""
     home = await remote_home()
     guarded = [home, *PROTECT]
-    if (p.count("/") <= 2 or p.rsplit("/", 1)[-1] == _home["user"]
+    scratch = bool(job) and any(p.startswith(r + "/") for r in NODE_SCRATCH)
+    if ((p.count("/") <= 2 and not scratch) or p.rsplit("/", 1)[-1] == _home["user"]
             or any(p == g or g.startswith(p + "/") for g in guarded)):
         raise ValueError(f"为安全起见，不允许删除或移动 {p}")
 
@@ -727,19 +795,22 @@ async def fs_op(request):
     q = shlex.quote
     skipped, timeout = [], 30
     try:
+        job = req_job(request, b)
         if op in ("mkdir", "touch"):
             target = check_path(b.get("dir")) + "/" + check_name(b.get("name"))
             cmd = f"mkdir -- {q(target)}" if op == "mkdir" else f"set -C; : > {q(target)}"
         elif op == "rename":
             src = check_path(b.get("path"))
-            await check_removable(src)
+            await check_removable(src, job)
             dst = parent_of(src) + "/" + check_name(b.get("name"))
             cmd = (f"[ -e {q(dst)} ] && {{ echo '已存在同名项' >&2; exit 1; }}; "
                    f"mv -- {q(src)} {q(dst)}")
         elif op in ("move", "copy"):
             dest = check_path(b.get("dest"))
             srcs = [check_path(p) for p in b.get("paths", [])]
-            _, listing, _ = await run(f"ls -A -- {q(dest)}")
+            lcode, listing, lerr = await run(f"ls -A -- {q(dest)}", job=job)
+            if lcode != 0:
+                return fail(lerr.strip() or "读取目标目录失败", 400)
             taken = set(listing.splitlines())
             parts = []
             for s in srcs:
@@ -747,7 +818,7 @@ async def fs_op(request):
                     raise ValueError(f"不能把 {s} 放进它自己里面")
                 name = s.rsplit("/", 1)[-1]
                 if op == "move":
-                    await check_removable(s)
+                    await check_removable(s, job)
                     if parent_of(s) == dest:
                         continue
                     if name in taken:
@@ -765,7 +836,7 @@ async def fs_op(request):
         elif op == "delete":
             srcs = [check_path(p) for p in b.get("paths", [])]
             for s in srcs:
-                await check_removable(s)
+                await check_removable(s, job)
             if not srcs:
                 return fail("没有选中任何项", 400)
             cmd, timeout = "rm -rf -- " + " ".join(q(s) for s in srcs), 600
@@ -773,7 +844,7 @@ async def fs_op(request):
             return fail("unknown op", 400)
     except ValueError as e:
         return fail(str(e), 400)
-    code, out, err = await run(f"timeout {timeout} bash -c {q(cmd)}", timeout=timeout + 20)
+    code, out, err = await run(f"timeout {timeout} bash -c {q(cmd)}", timeout=timeout + 20, job=job)
     if code != 0:
         return fail(err.strip() or out.strip() or f"操作失败（{code}）", 400)
     return web.json_response({"ok": True, "skipped": skipped})
