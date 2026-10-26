@@ -65,6 +65,9 @@ NAME = os.environ.get("BABEL_UI_NAME") or "Babel"            # shown in the page
 PERSIST = os.environ.get("BABEL_UI_PERSIST") or "8h"         # idle lifetime of the shared ssh connection
 DUO_OPTION = os.environ.get("BABEL_UI_DUO_OPTION", "1")      # reply to Duo's "Passcode or option"; "" = don't
 PROTECT = [p.rstrip("/") for p in os.environ.get("BABEL_UI_PROTECT", "").split(":") if p.startswith("/")]
+# Every terminal is one session on the shared ssh connection, and sshd allows ~10 sessions per
+# connection (MaxSessions); the panel's own queries use up to 3 more, so 5 terminals is safe.
+MAX_TERMS = max(1, int(os.environ.get("BABEL_UI_MAX_TERMS") or 5))
 
 STATIC = ROOT / "static"
 ASKPASS = ROOT / "askpass.py"
@@ -221,6 +224,7 @@ async def status(request):
     if not connected and saved and login["state"] not in ("failed", "running"):
         asyncio.ensure_future(auto_login())
     return web.json_response({"connected": connected, "host": HOST, "name": NAME, "has_password": saved,
+                              "max_terms": MAX_TERMS,
                               "login": login["state"], "login_error": login["error"]})
 
 
@@ -919,6 +923,10 @@ async def stop_watch(app):
 async def terminal(request):
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
+    if len(request.app["terms"]) >= MAX_TERMS:
+        await ws.send_bytes(f"终端太多了：最多同时开 {MAX_TERMS} 个，先关掉一个。\r\n".encode())
+        await ws.close()
+        return ws
     if has_password() and not await master_alive():
         # Let the saved password open the shared connection first so the
         # terminal rides on it instead of prompting.

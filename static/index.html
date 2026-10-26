@@ -119,8 +119,20 @@ tr:hover td { background: var(--hover); }
 .frow .bar { grid-column: 2 / -1; height: 4px; border-radius: 2px; background: var(--accent); opacity: .6; margin-top: -2px; }
 .disk { padding: 6px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; white-space: pre; overflow-x: auto; }
 
-#termBox { flex: 1; background: var(--term-bg); padding: 6px; min-height: 0; }
-#termBox .xterm { height: 100%; }
+#termBox { flex: 1; background: var(--term-bg); min-height: 0; position: relative; }
+.tbox { position: absolute; inset: 6px; display: none; }
+.tbox.active { display: block; }
+.tbox .xterm { height: 100%; }
+.ttabs { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; min-width: 0; }
+.ttab { display: flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border: 1px solid var(--line);
+  border-radius: 6px; cursor: pointer; background: var(--bg); font-size: 12px; max-width: 220px; }
+.ttab span.title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ttab.active { border-color: var(--accent); background: var(--hover); font-weight: 600; }
+.ttab i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.ttab.closed i { background: var(--muted); }
+.ttab .x { flex: none; opacity: .55; padding: 0 5px; border-radius: 4px; line-height: 1.3; }
+.ttab .x:hover { opacity: 1; background: var(--line); }
+.ttabs .add { padding: 2px 9px; }
 
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
   width: min(900px, 92vw); padding: 0; }
@@ -308,8 +320,10 @@ button.danger { color: var(--bad); }
 
   <section class="card" id="term">
     <div class="head">
-      <h2>终端</h2><span class="muted" id="termState"></span><span class="spacer"></span>
-      <button class="ghost" id="termReconnect">重新连接</button>
+      <h2>终端</h2>
+      <div class="ttabs" id="termTabs"></div>
+      <span class="muted" id="termState"></span><span class="spacer"></span>
+      <button class="ghost" id="termReconnect" title="重新连接当前这个终端">重新连接</button>
     </div>
     <div id="termBox"></div>
   </section>
@@ -412,6 +426,7 @@ async function pollStatus() {
     connected = s.connected;
     $("dot").classList.toggle("on", connected);
     lastStatus = s;
+    if (s.max_terms && s.max_terms !== MAX_TERMS) { MAX_TERMS = s.max_terms; renderTermTabs(); }
     $("connHint").textContent = connected ? "" :
       s.login === "running" ? "自动登录中…（有 Duo 的话请在手机上确认）" :
       s.login === "failed" ? "自动登录失败，点右上角 🔑 查看" :
@@ -449,7 +464,7 @@ $("pwRetry").onclick = async () => {
   $("pwState").textContent = "登录中…";
   await api("/api/login", { method: "POST" });
   await pollStatus();
-  if (connected && !(ws && ws.readyState === 1)) connectTerm();
+  if (connected && activeTerm && !activeTerm.open) connectTerm(activeTerm);
 };
 
 // ---------------------------------------------------------- jobs
@@ -549,12 +564,6 @@ function toast(msg, ms = 4000) {
   return t;
 }
 const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
-function pasteToTerm(text) {
-  if (!(ws && ws.readyState === 1)) { toast("终端未连接"); return false; }
-  ws.send(JSON.stringify({ t: "i", d: text }));
-  showTab("term");
-  return true;
-}
 // "billing=28,cpu=4,gres/gpu:l40s=1,gres/gpu=1,mem=32G,node=1" -> "4c 32G l40s×1"
 function tresShort(t) {
   const kv = Object.fromEntries((t || "").split(",").map(x => x.split("=")));
@@ -673,7 +682,8 @@ async function loadJobGpu() {
 
 // Step into a running job's allocation; exiting the shell leaves the job running.
 function enterJob(id) {
-  if (pasteToTerm(`srun --jobid=${id} --overlap --pty bash -l\r`)) $("jobDlg").close();
+  const node = runningJobs.find(j => j.id === id)?.node;
+  if (runInNewTerm(node ? `节点 ${node}` : `作业 ${id}`, `srun --jobid=${id} --overlap --pty bash -l\r`)) $("jobDlg").close();
 }
 $("jShell").onclick = () => { if (jd) enterJob(jd.job.id); };
 $("jFiles").onclick = () => { if (jd) { const id = jd.job.id; $("jobDlg").close(); browseNode(id); } };
@@ -717,7 +727,7 @@ $("histBody").addEventListener("click", (e) => {
     const j = histJobs.find(x => x.id === rid);
     if (!j?.submit_line) return toast("这个作业没有记录提交命令");
     // No Enter: sacct drops the original quoting, so let the user check the line first.
-    if (pasteToTerm(`cd ${shq(j.workdir)} && ${j.submit_line}`)) toast("命令已放进终端，检查无误后按回车提交", 6000);
+    if (typeIntoActive(`cd ${shq(j.workdir)} && ${j.submit_line}`)) toast("命令已放进终端，检查无误后按回车提交", 6000);
     return;
   }
   const row = e.target.closest("tr[data-job]");
@@ -815,10 +825,11 @@ function interactiveCmd(opts) {
 }
 $("rSalloc").onclick = () => {
   const opts = reqOpts(reqData());
-  if (confirm(`将在终端里提交一个占位作业：\n\nsbatch ${opts.join(" ")} --wrap="sleep infinity"\n\n` +
-              `开始运行后自动进入计算节点的 shell。exit 退出或等待时按 Ctrl-C，都会自动 scancel 释放资源；` +
-              `刷新页面或关掉页面不会取消作业，它会继续排队 / 运行，到「作业」页点「进入」回去，不用了记得自己取消。`))
-    pasteToTerm(interactiveCmd(opts) + "\r");
+  if (confirm(`将在一个新的终端标签里提交一个占位作业：\n\nsbatch ${opts.join(" ")} --wrap="sleep infinity"\n\n` +
+              `它在自己的标签里等，不影响别的终端，所以可以同时排好几个。开始运行后自动进入计算节点的 shell。` +
+              `exit 退出或等待时按 Ctrl-C，都会自动 scancel 释放资源；` +
+              `刷新页面或关掉标签不会取消作业，它会继续排队 / 运行，到「作业」页点「进入」回去，不用了记得自己取消。`))
+    runInNewTerm("排队中", interactiveCmd(opts) + "\r");
 };
 $("rCopy").onclick = async () => {
   const text = reqOpts(reqData()).map(o => "#SBATCH " + o).join("\n");
@@ -1254,13 +1265,15 @@ $("duBtn").onclick = async () => {
 };
 
 $("cdTerm").onclick = () => {
-  if (!(ws && ws.readyState === 1)) return;
-  // On a compute node, step into the job there (srun --overlap) and land in this directory.
-  const cmd = fsJob
-    ? `srun --jobid=${fsJob} --overlap --pty bash -lc ${shq(`cd ${shq(cwd)} && exec bash -l`)}\r`
-    : `cd ${shq(cwd)}\r`;
-  ws.send(JSON.stringify({ t: "i", d: cmd }));
-  showTab("term");
+  // On a compute node, step into the job there (srun --overlap) in a new tab and land in this
+  // directory; on the login node just cd in whichever terminal is in front.
+  if (fsJob) {
+    const node = where()?.node;
+    runInNewTerm(node ? `节点 ${node}` : `作业 ${fsJob}`,
+      `srun --jobid=${fsJob} --overlap --pty bash -lc ${shq(`cd ${shq(cwd)} && exec bash -l`)}\r`);
+  } else {
+    typeIntoActive(`cd ${shq(cwd)}\r`);
+  }
 };
 
 function uploadFiles(files) {
@@ -1303,34 +1316,147 @@ async function loadDisk() {
 }
 
 // ---------------------------------------------------------- terminal
-const term = new Terminal({
-  fontFamily: '"SF Mono", Menlo, monospace', fontSize: 13, cursorBlink: true,
-  theme: { background: getComputedStyle(document.documentElement).getPropertyValue("--term-bg").trim() },
-});
-const fit = new FitAddon.FitAddon();
-term.loadAddon(fit);
-let ws;
-// xterm can't measure inside a display:none tab, so mount on first show; output is buffered until then.
-let termOpened = false;
+// Several terminals, one per tab; each is its own xterm + websocket + ssh session on the server.
+const terms = [];            // { id, base, job, host, tail, pending, ws, open, opened, term, fit, el, dec }
+let activeTerm = null;
+let termSeq = 0;
+let MAX_TERMS = 5;           // overridden by /api/status (BABEL_UI_MAX_TERMS)
+const ANSI = /\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b\][^\x07]*\x07/g;
 
-function sendSize() {
-  if (!termOpened || !$("term").classList.contains("active")) return;
-  fit.fit();
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: "r", cols: term.cols, rows: term.rows }));
+// The tab title follows what is happening inside: queued job, or the node whose shell you are in.
+function termTitle(t) {
+  if (t.host && !/^login/.test(t.host)) return `节点 ${t.host}`;
+  if (t.job) return `排队 #${t.job}`;
+  return t.base;
 }
 
-function connectTerm() {
-  if (ws) ws.close();
-  term.reset();
-  ws = new WebSocket(`ws://${location.host}/ws/term`);
+function renderTermTabs() {
+  $("termTabs").innerHTML = terms.map(t =>
+    `<div class="ttab ${t === activeTerm ? "active" : ""} ${t.open ? "" : "closed"}" data-id="${t.id}"
+      title="${t.open ? "" : "已断开，点右上角「重新连接」"}"><i></i><span class="title">${esc(termTitle(t))}</span>
+      <span class="x" data-x="${t.id}" title="关闭这个终端">✕</span></div>`).join("") +
+    `<button class="ghost add" id="termAdd" ${terms.length >= MAX_TERMS ? "disabled" : ""}
+      title="${terms.length >= MAX_TERMS ? `最多同时开 ${MAX_TERMS} 个` : "新开一个终端"}">＋</button>`;
+  $("termState").textContent = activeTerm && !activeTerm.open ? "已断开" : "";
+}
+
+function mountTerm(t) { if (!t.opened) { t.term.open(t.el); t.opened = true; } }
+
+// xterm can't measure a display:none element, so only fit (and tell the server the size) when visible.
+function fitTerm(t) {
+  if (!t.opened || t !== activeTerm || !$("term").classList.contains("active")) return;
+  t.fit.fit();
+  if (t.ws && t.ws.readyState === 1) t.ws.send(JSON.stringify({ t: "r", cols: t.term.cols, rows: t.term.rows }));
+}
+new ResizeObserver(() => activeTerm && fitTerm(activeTerm)).observe($("termBox"));
+
+function activateTerm(t) {
+  activeTerm = t;
+  terms.forEach(x => x.el.classList.toggle("active", x === t));
+  renderTermTabs();
+  if ($("term").classList.contains("active")) requestAnimationFrame(() => { mountTerm(t); fitTerm(t); t.term.focus(); });
+}
+
+// Send the startup command once the remote shell has printed its prompt. Typing earlier would be
+// echoed by the local pty and, if ssh were still asking for a password, typed into that prompt.
+function sendPending(t) {
+  if (!t.pending || !t.ws || t.ws.readyState !== 1) return;
+  const cmd = t.pending;
+  t.pending = "";
+  t.ws.send(JSON.stringify({ t: "i", d: cmd }));
+}
+
+function connectTerm(t) {
+  if (t.ws) t.ws.close();
+  t.term.reset();
+  t.tail = ""; t.host = ""; t.dec = new TextDecoder();
+  const ws = t.ws = new WebSocket(`ws://${location.host}/ws/term`);
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => { $("termState").textContent = ""; sendSize(); };
-  ws.onmessage = (e) => { term.write(new Uint8Array(e.data)); };
-  ws.onclose = () => { $("termState").textContent = "已断开"; };
+  ws.onopen = () => {
+    t.open = true; fitTerm(t); renderTermTabs();
+    // fallback if the prompt is never recognised, but only when the shared connection is up
+    // (otherwise ssh may be waiting for a password and the command would be typed into it)
+    setTimeout(() => { if (connected && t.ws === ws) sendPending(t); }, 6000);
+  };
+  ws.onmessage = (e) => {
+    const bytes = new Uint8Array(e.data);
+    t.term.write(bytes);
+    const s = t.dec.decode(bytes, { stream: true }).replace(ANSI, "");
+    t.tail = (t.tail + s).slice(-300);
+    let changed = false, m;
+    if ((m = /已提交占位作业 (\d+)/.exec(s))) { t.job = m[1]; changed = true; }
+    if (/已释放作业/.test(s)) { t.job = ""; changed = true; }
+    const hosts = [...s.matchAll(/\[[\w.-]+@([\w.-]+)[^\]\n]*\][$#]/g)];
+    if (hosts.length && hosts[hosts.length - 1][1] !== t.host) { t.host = hosts[hosts.length - 1][1]; changed = true; }
+    if (changed) renderTermTabs();
+    if (t.pending && /\][$#] $/.test(t.tail)) setTimeout(() => sendPending(t), 150);
+  };
+  ws.onclose = () => { if (t.ws === ws) { t.open = false; renderTermTabs(); } };
 }
-term.onData((d) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: "i", d })); });
-new ResizeObserver(sendSize).observe($("termBox"));
-$("termReconnect").onclick = connectTerm;
+
+function newTerm({ title = "", run = "" } = {}) {
+  if (terms.length >= MAX_TERMS) {
+    toast(`最多同时开 ${MAX_TERMS} 个终端（同一条 ssh 连接能承载的会话数有限），先关掉一个`, 6000);
+    return null;
+  }
+  const t = { id: ++termSeq, base: title || `终端 ${termSeq}`, job: "", host: "", tail: "", pending: run,
+              ws: null, open: false, opened: false };
+  t.el = document.createElement("div");
+  t.el.className = "tbox";
+  $("termBox").appendChild(t.el);
+  t.term = new Terminal({
+    fontFamily: '"SF Mono", Menlo, monospace', fontSize: 13, cursorBlink: true,
+    theme: { background: getComputedStyle(document.documentElement).getPropertyValue("--term-bg").trim() },
+  });
+  t.fit = new FitAddon.FitAddon();
+  t.term.loadAddon(t.fit);
+  t.term.onData((d) => { if (t.ws && t.ws.readyState === 1) t.ws.send(JSON.stringify({ t: "i", d })); });
+  terms.push(t);
+  connectTerm(t);
+  activateTerm(t);
+  return t;
+}
+
+function closeTerm(t) {
+  const i = terms.indexOf(t);
+  if (i < 0) return;
+  const job = t.job;
+  const ws = t.ws;
+  t.ws = null;
+  if (ws) ws.close();
+  t.term.dispose();
+  t.el.remove();
+  terms.splice(i, 1);
+  // Closing only hangs up the terminal; a queued or running placeholder job is not cancelled.
+  if (job) toast(`终端已关闭，作业 ${job} 没有被取消，还在队列里 / 运行中，到「作业」页处理`, 7000);
+  if (!terms.length) newTerm({ title: "终端" });
+  else if (activeTerm === t) activateTerm(terms[Math.min(i, terms.length - 1)]);
+  else renderTermTabs();
+}
+
+$("termTabs").addEventListener("click", (e) => {
+  if (e.target.closest("#termAdd")) return newTerm();
+  const x = e.target.closest("[data-x]");
+  if (x) return closeTerm(terms.find(t => t.id === +x.dataset.x));
+  const tab = e.target.closest(".ttab");
+  if (tab) activateTerm(terms.find(t => t.id === +tab.dataset.id));
+});
+$("termReconnect").onclick = () => { if (activeTerm) connectTerm(activeTerm); };
+
+// Start something in a NEW terminal tab (so it can wait there without blocking the others).
+function runInNewTerm(title, cmd) {
+  if (!connected) { toast("还没连上集群：先在「终端」里登录，或点右上角 🔑 保存密码", 6000); return null; }
+  showTab("term");
+  return newTerm({ title, run: cmd });
+}
+// Type into whichever terminal is in front (no Enter unless the text ends with one).
+function typeIntoActive(text) {
+  const t = activeTerm;
+  if (!t || !t.ws || t.ws.readyState !== 1) { toast("终端未连接"); return false; }
+  t.ws.send(JSON.stringify({ t: "i", d: text }));
+  showTab("term");
+  return true;
+}
 
 // ---------------------------------------------------------- tabs
 function showTab(name) {
@@ -1341,9 +1467,10 @@ function showTab(name) {
   if (name === "hist") loadHist();
   if (name === "req") loadMe();
   if (name === "term") requestAnimationFrame(() => {
-    if (!termOpened) { term.open($("termBox")); termOpened = true; }
-    sendSize();
-    term.focus();
+    if (!activeTerm) return;
+    mountTerm(activeTerm);
+    fitTerm(activeTerm);
+    activeTerm.term.focus();
   });
 }
 $("tabs").addEventListener("click", (e) => {
@@ -1361,7 +1488,7 @@ function refreshAll(withFiles) {
 }
 $("refreshAll").onclick = () => refreshAll(true);
 
-connectTerm();
+newTerm({ title: "终端" });
 pollStatus();
 setInterval(pollStatus, 4000);
 setInterval(loadJobs, 10000);
