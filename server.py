@@ -966,13 +966,31 @@ async def terminal(request):
         except Exception:
             pass
         request.app["terms"].discard(pid)
-        try:
-            os.kill(pid, signal.SIGHUP)
-            os.waitpid(pid, 0)
-        except Exception:
-            pass
-        os.close(fd)
+        os.close(fd)   # hangs up the pty, which already tells ssh to quit
+        # Never wait for the child here: if ssh ignores the hangup (e.g. stuck at a password
+        # prompt) a blocking waitpid freezes the whole event loop and with it the whole panel.
+        asyncio.ensure_future(reap(pid))
     return ws
+
+
+async def reap(pid: int):
+    """Get rid of a terminal's ssh without blocking: HUP first (a ControlMaster then lingers in
+    the background and keeps the shared connection), then TERM, then KILL for one that won't go."""
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+        deadline = loop.time() + 3
+        while loop.time() < deadline:
+            try:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                return
+            if done:
+                return
+            await asyncio.sleep(0.2)
 
 
 async def kill_terms(app):

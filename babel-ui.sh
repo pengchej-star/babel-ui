@@ -40,21 +40,45 @@ _babel_ui_log() {
   fi
 }
 
+# Is the server answering? Always with a timeout, and on "/" (a static page) rather than an
+# API route, so a frozen server can't hang this shell and checking can't trigger an auto-login.
+_babel_ui_up() { curl -s -m 3 -o /dev/null "$1/"; }
+
+# Stop whatever listens on a port: TERM, then KILL if it is frozen and ignores that.
+_babel_ui_kill() {
+  local pids i
+  pids="$(lsof -ti "tcp:$1" -sTCP:LISTEN 2>/dev/null)"
+  [ -z "$pids" ] && return 1
+  if [ -n "${ZSH_VERSION:-}" ]; then kill ${=pids} 2>/dev/null; else kill $pids 2>/dev/null; fi
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    lsof -ti "tcp:$1" -sTCP:LISTEN >/dev/null 2>&1 || return 0
+    sleep 0.2
+  done
+  pids="$(lsof -ti "tcp:$1" -sTCP:LISTEN 2>/dev/null)"
+  if [ -n "${ZSH_VERSION:-}" ]; then kill -9 ${=pids} 2>/dev/null; else kill -9 $pids 2>/dev/null; fi
+  sleep 0.3
+  return 0
+}
+
 babel-ui() {
   local port url log i browser
   port="$(_babel_ui_cfg BABEL_UI_PORT 8765)"
   url="http://127.0.0.1:$port"
   log="$(_babel_ui_log)"
-  if curl -s -o /dev/null "$url/api/status"; then
+  if _babel_ui_up "$url"; then
     echo "babel-ui 已在运行：$url"
   else
+    if lsof -ti "tcp:$port" -sTCP:LISTEN >/dev/null 2>&1; then
+      echo "babel-ui 在运行但没有响应（卡住了），先把它关掉重新启动…"
+      _babel_ui_kill "$port"
+    fi
     # subshell + nohup: detached from this terminal, keeps running after you close it
     ( cd "$BABEL_UI_DIR" && BABEL_UI_PORT="$port" nohup "$(_babel_ui_python)" -u server.py >>"$log" 2>&1 & )
     for i in $(seq 1 50); do
-      curl -s -o /dev/null "$url/api/status" && break
+      _babel_ui_up "$url" && break
       sleep 0.2
     done
-    if ! curl -s -o /dev/null "$url/api/status"; then
+    if ! _babel_ui_up "$url"; then
       echo "babel-ui 启动失败，日志最后几行（$log）："
       tail -n 20 "$log"
       return 1
@@ -78,12 +102,10 @@ babel-ui() {
 }
 
 babel-ui-stop() {
-  local port pids host
+  local port host
   port="$(_babel_ui_cfg BABEL_UI_PORT 8765)"
-  pids="$(lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null)"
-  if [ -n "$pids" ]; then
-    # word-split on purpose: one pid per word
-    if [ -n "${ZSH_VERSION:-}" ]; then kill ${=pids}; else kill $pids; fi && echo "babel-ui 已停止"
+  if _babel_ui_kill "$port"; then
+    echo "babel-ui 已停止"
   else
     echo "babel-ui 没在运行"
   fi
