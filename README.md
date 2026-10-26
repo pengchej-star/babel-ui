@@ -85,7 +85,7 @@ babel-ui-stop --all  # 关闭，并断开到集群的共享 ssh 连接
 - **历史**：`sacct` 最近 1 / 7 / 30 天的作业，含退出码、用时、资源。点一行看详情和日志。「重新提交」把 `cd 原目录 && 原 sbatch 命令` 放进终端但不回车——`sacct` 记录的命令丢了引号，需要你确认一下再按回车。
 - **申请**：选分区 / 卡型 / 卡数 / CPU / 内存 / 时长：
   - 「预估开始时间」用 `sbatch --test-only` 问调度器，不会提交作业；
-  - 「开交互式会话」：先提交一个 `sleep infinity` 的占位作业，开始运行后用 `srun --jobid --overlap --pty` 进计算节点的 shell（Babel 的 preempt 只允许 `sbatch`，`salloc` 会被拒）；exit、等待时 Ctrl-C 或终端断开都会自动 `scancel`；
+  - 「开交互式会话」：先提交一个 `sleep infinity` 的占位作业，开始运行后用 `srun --jobid --overlap --pty` 进计算节点的 shell（Babel 的 preempt 只允许 `sbatch`，`salloc` 会被拒）；`exit` 或等待时 Ctrl-C 会自动 `scancel`；刷新页面、关掉页面（终端断开）**不会**取消，作业继续排队 / 运行，到「作业」页点「进入」回去，用完记得自己取消；
   - 「复制 #SBATCH 头」复制对应的脚本头。
 
   分区列表只列你的 QoS 能提交的（从 `sacctmgr` 的 association 推出来），会自动带上 `--qos`；GPU 数为 0 时如果有对应的 CPU QoS（如 `preempt_cpu_qos`）会自动换用。

@@ -799,12 +799,14 @@ $("rEstimate").onclick = async () => {
 };
 // Babel's preempt (and likely others) rejects salloc/srun allocations ("Only sbatch jobs
 // are allowed"), so hold the resources with a sleeping sbatch job and step into it.
-// The subshell's EXIT trap scancels the holder on exit, Ctrl-C, or a dropped terminal
-// (HUP) — scancel runs first because echo may fail once the tty is gone.
+// The subshell's EXIT trap scancels the holder on a normal exit or Ctrl-C. A dropped terminal
+// (HUP) deliberately does NOT cancel: refreshing the page drops the web terminal, and that must
+// not throw away a job that has waited in the queue for hours. The job stays in the jobs list;
+// click 进入 on it once it is running (a start notification pops up).
 function interactiveCmd(opts) {
   return `( jid=$(sbatch --parsable --job-name=interactive ${opts.join(" ")} --wrap="sleep infinity") || exit 1; ` +
-    `trap 'scancel $jid; echo; echo "已释放作业 $jid"' EXIT; trap 'exit 130' INT TERM HUP; ` +
-    `echo "已提交占位作业 $jid，等待分配资源（Ctrl-C 取消并撤回）…"; ` +
+    `trap 'scancel $jid; echo; echo "已释放作业 $jid"' EXIT; trap 'exit 130' INT TERM; ` +
+    `echo "已提交占位作业 $jid，等待分配资源（Ctrl-C 取消并撤回；刷新页面不会取消，之后在「作业」页点「进入」）…"; ` +
     `while :; do s=$(squeue -h -j $jid -o %T); [ "$s" = RUNNING ] && break; ` +
     `[ -z "$s" ] && { echo "作业已结束"; exit 1; }; sleep 5; done; ` +
     `srun --jobid=$jid --overlap --pty bash -l )`;
@@ -812,7 +814,8 @@ function interactiveCmd(opts) {
 $("rSalloc").onclick = () => {
   const opts = reqOpts(reqData());
   if (confirm(`将在终端里提交一个占位作业：\n\nsbatch ${opts.join(" ")} --wrap="sleep infinity"\n\n` +
-              `开始运行后自动进入计算节点的 shell。exit 退出或等待时按 Ctrl-C，都会自动 scancel 释放资源。`))
+              `开始运行后自动进入计算节点的 shell。exit 退出或等待时按 Ctrl-C，都会自动 scancel 释放资源；` +
+              `刷新页面或关掉页面不会取消作业，它会继续排队 / 运行，到「作业」页点「进入」回去，不用了记得自己取消。`))
     pasteToTerm(interactiveCmd(opts) + "\r");
 };
 $("rCopy").onclick = async () => {
