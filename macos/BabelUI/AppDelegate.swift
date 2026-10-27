@@ -65,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showPanel() {
         if window == nil { window = makeWindow() }
+        if let w = window, w.styleMask.contains(.fullScreen) { w.toggleFullScreen(nil) }
         NSApp.setActivationPolicy(.regular)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
@@ -82,6 +83,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         w.title = "Babel UI"
         w.isReleasedWhenClosed = false   // keep the web view (and its terminals) when closed
         w.tabbingMode = .disallowed
+        // Open in whatever Space you're in (even over a full-screen app) instead of jumping to the
+        // Space it was last on; never become a full-screen Space of its own (green button = zoom).
+        w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         w.delegate = self
         w.center()
         w.setFrameAutosaveName("BabelUIPanel")
